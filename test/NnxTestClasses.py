@@ -386,9 +386,9 @@ class NnxTestHeaderGenerator:
         if test.synthetic_weights:
             weight_offset = 0
         else:
-            weight_offset = -(2 ** (weight_bits - 1))
+            weight_offset = weight_bits - 1 #Changed from absolute value to shift value
         weight_out_ch, weight_in_ch, weight_ks_h, weight_ks_w = test.weight.shape
-        weight_data: np.ndarray = test.weight.numpy() - weight_offset
+        weight_data: np.ndarray = test.weight.numpy() + (2 ** (weight_bits - 1))
         weight_init = self.weightEncode(
             weight_data.astype(np.uint8),
             weight_type._bits,
