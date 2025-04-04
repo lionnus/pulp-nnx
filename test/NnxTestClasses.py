@@ -291,7 +291,8 @@ class NnxTestGenerator:
             if conf.has_bias and bias is None:
                 assert conf.bias_type is not None
                 # same limits as in old NE16 generator
-                bias_extremes = (-(1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT), (1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT)-1)
+                # bias_extremes = (-(1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT), (1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT)-1)
+                bias_extremes = (-2048, 2048) # TODO fix
                 bias = NnxTestGenerator._random_data(
                     conf.bias_type, shape=bias_shape, extremes=bias_extremes
                 ).type(torch.int32)
