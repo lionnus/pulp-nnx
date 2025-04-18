@@ -442,7 +442,7 @@ class NnxTestHeaderGenerator:
             weight_offset = weight_bits - 1 #Changed from absolute value to shift value
         weight_out_ch, weight_in_ch, weight_ks_h, weight_ks_w = test.weight.shape
         
-        if not test.is_gemm:
+        if not test.conf.is_gemm:
             weight_data: np.ndarray = test.weight.numpy() + (2 ** (weight_bits - 1))
             weight_init = self.weightEncode(
             weight_data.astype(np.uint8),
