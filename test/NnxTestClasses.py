@@ -1,4 +1,5 @@
 # Luka Macan <luka.macan@unibo.it>
+# Extended by Lionnus Kesting <lkesting@ethz.ch>
 #
 # Copyright 2023 ETH Zurich and University of Bologna
 #
@@ -32,24 +33,40 @@ from TestClasses import IntegerType, KernelShape, Padding, Stride, implies
 
 
 class NnxTestConf(BaseModel):
+    # Input / output shapes
     in_height: PositiveInt
     in_width: PositiveInt
     in_channel: PositiveInt
     out_channel: PositiveInt
+
+    # Layer parameters
     padding: Padding
     kernel_shape: KernelShape
     depthwise: bool
     stride: Stride
+
+    # Datatypes
     in_type: IntegerType
     out_type: IntegerType
     weight_type: IntegerType
     scale_type: Optional[IntegerType] = None
     bias_type: Optional[IntegerType] = None
+
+    # Feature flags
     has_norm_quant: bool
     has_bias: bool
     has_relu: bool
+    
+    # GEMM Operation mode flag
+    is_gemm: bool = False
+
+    # Test‑data generation helpers
     synthetic_weights: bool
     synthetic_inputs: bool
+
+    # ------------------------------------------------------------------
+    # Validators
+    # ------------------------------------------------------------------
 
     @model_validator(mode="after")  # type: ignore
     def check_valid_depthwise_channels(self) -> NnxTestConf:
@@ -85,6 +102,9 @@ class NnxTestConf(BaseModel):
 
     @model_validator(mode="after")  # type: ignore
     def check_has_bias_with_norm_quant(self) -> NnxTestConf:
+        # GEMM tests are allowed to request a bias type, but the bias will be
+        # hard‑clamped to zero in the generator, so the original constraint
+        # is still valid.
         assert implies(self.has_bias, self.has_norm_quant), (
             f"Bias flag can only be enabled when norm_quant is enabled. "
             f"Given has_bias {self.has_bias} and has_norm_quant {self.has_norm_quant}"
@@ -118,6 +138,7 @@ class NnxTest:
         scale: Optional[torch.Tensor] = None,
         bias: Optional[torch.Tensor] = None,
         global_shift: Optional[torch.Tensor] = torch.Tensor([0]),
+        is_gemm: Optional[bool] = False,
         synthetic_weights: Optional[bool] = False,
         synthetic_inputs: Optional[bool] = False,
     ) -> None:
@@ -128,6 +149,7 @@ class NnxTest:
         self.scale = scale
         self.bias = bias
         self.global_shift = global_shift
+        self.is_gemm = is_gemm
         self.synthetic_weights = synthetic_weights
         self.synthetic_inputs = synthetic_inputs
 
@@ -206,6 +228,8 @@ class NnxTestGenerator:
     _DEFAULT_SCALE_MAX_BIT_8BIT = 5
     _DEFAULT_BIAS_MAX_BIT = 18
 
+    # ---------------------- Helper methods ----------------------
+
     @staticmethod
     def _calculate_global_shift(
         tensor: torch.Tensor, out_type: IntegerType
@@ -213,11 +237,9 @@ class NnxTestGenerator:
         """Calculate global shift so that the output values are in the range of out_type"""
         s = tensor.type(torch.float64).std()
         target_s = 2 ** (out_type._bits - 1)
-        shift = torch.ceil(torch.log2(s / target_s)).type(torch.int32)
-        if shift < 1:
-            return torch.zeros((1,)).type(torch.int32)
-        else:
-            return shift
+        shift = torch.ceil(torch.log2(s / target_s))
+        return torch.clamp(shift, 0, 255).type(torch.uint8)
+
 
     @staticmethod
     def _random_data(_type: IntegerType, shape: Tuple, extremes: Tuple = None):
@@ -240,8 +262,12 @@ class NnxTestGenerator:
         global_shift: Optional[torch.Tensor] = None,
         verbose: bool = False,
     ) -> NnxTest:
+        """Generate (or regenerate) a test‑vector bundle from a configuration."""
         torch.manual_seed(NnxTestGenerator._DEFAULT_SEED)
 
+        # ------------------------------------------------------------------
+        # Shape bookkeeping
+        # ------------------------------------------------------------------
         input_shape = (1, conf.in_channel, conf.in_height, conf.in_width)
         weight_shape = (
             conf.out_channel,
@@ -252,9 +278,12 @@ class NnxTestGenerator:
         scale_shape = (1, conf.out_channel, 1, 1)
         bias_shape = (1, conf.out_channel, 1, 1)
 
+        # ------------------------------------------------------------------
+        # Input tensor
+        # ------------------------------------------------------------------
         if input is None:
             if conf.synthetic_inputs:
-                inputs = torch.zeros((1, conf.in_channel, conf.in_height, conf.in_width), dtype=torch.int64)
+                input = torch.zeros(input_shape, dtype=torch.int64)
                 for i in range(conf.in_channel):
                     inputs[:, i,0,0] = i
             else:
@@ -263,9 +292,12 @@ class NnxTestGenerator:
                     shape=input_shape,
                 )
 
+        # ------------------------------------------------------------------
+        # Weight tensor
+        # ------------------------------------------------------------------
         if weight is None:
             if conf.synthetic_weights:
-                weight = torch.zeros((conf.out_channel, 1 if conf.depthwise else conf.in_channel, conf.kernel_shape.height, conf.kernel_shape.width), dtype=torch.int64)
+                weight = torch.zeros(weight_shape, dtype=torch.int64)
                 for i in range(0, min(weight.shape[0], weight.shape[1])):
                     weight[i,i,0,0] = 1
             else:
@@ -278,6 +310,9 @@ class NnxTestGenerator:
                     shape=weight_shape,
                 )
 
+        # ------------------------------------------------------------------
+        # Scale & bias (only if norm‑quant is enabled)
+        # ------------------------------------------------------------------
         if conf.has_norm_quant:
             if scale is None:
                 assert conf.scale_type is not None
@@ -288,14 +323,17 @@ class NnxTestGenerator:
                 scale = NnxTestGenerator._random_data(
                     conf.scale_type, shape=scale_shape, extremes=scale_extremes
                 )
-            if conf.has_bias and bias is None:
+            if conf.has_bias and bias is None and conf.is_gemm == False:
                 assert conf.bias_type is not None
                 # same limits as in old NE16 generator
-                # bias_extremes = (-(1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT), (1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT)-1)
-                bias_extremes = (-2048, 2048) # TODO fix
+                bias_extremes = (-(1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT), (1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT)-1)
                 bias = NnxTestGenerator._random_data(
                     conf.bias_type, shape=bias_shape, extremes=bias_extremes
                 ).type(torch.int32)
+            elif conf.has_bias and bias is None and conf.is_gemm == True:
+                # Set bias to 0 for GEMM (TODO for Neureka-TX -> remove bias phase for gemm)
+                bias = torch.zeros(bias_shape, dtype=torch.int64)
+                
             if global_shift is None:
                 global_shift = torch.Tensor([0]).type(torch.int32)
                 conv_kwargs = {
@@ -315,9 +353,15 @@ class NnxTestGenerator:
                     output, conf.out_type
                 )
 
-        output = NeuralEngineFunctionalModel().convolution(
-            input, weight, scale, bias, global_shift, verbose=verbose, **conf.__dict__
-        )
+        if conf.is_gemm:
+            #TODO Call .gemm method for is_gemm
+            output = NeuralEngineFunctionalModel().convolution(
+                input, weight, scale, bias, global_shift, verbose=verbose, **conf.__dict__
+            )
+        else:
+            output = NeuralEngineFunctionalModel().convolution(
+                input, weight, scale, bias, global_shift, verbose=verbose, **conf.__dict__
+            )
 
         return NnxTest(
             conf=conf,
@@ -331,6 +375,9 @@ class NnxTestGenerator:
             synthetic_weights=conf.synthetic_weights,
         )
 
+    # -----------------------------------------------------------------------
+    # Regenerate test
+    # -----------------------------------------------------------------------
     @staticmethod
     def regenerate(test: NnxTest, regen_tensors: Set[str]) -> NnxTest:
         test_tensors = set(["input", "output", "weight", "scale", "bias"])
@@ -361,7 +408,9 @@ class NnxTestHeaderGenerator:
         _, in_channel, in_height, in_width = test.input.shape
         _, out_channel, out_height, out_width = test.output.shape
 
-        # Render input
+        # ------------------------------------------------------------------
+        # Render input tensor
+        # ------------------------------------------------------------------
         in_ctype = test.conf.in_type.ctype()
         in_signed = test.conf.in_type._signed
         in_data = test.input.permute(0, 2, 3, 1).ravel()
@@ -369,7 +418,9 @@ class NnxTestHeaderGenerator:
             "input", _type=in_ctype, size=in_data.numel(), init=in_data
         )
 
-        # Render output
+        # ------------------------------------------------------------------
+        # Render golden output tensor
+        # ------------------------------------------------------------------
         out_ctype = test.conf.out_type.ctype()
         out_data_golden = test.output.permute(0, 2, 3, 1).ravel()
         self.header_writer.generate_vector_files(
@@ -378,8 +429,9 @@ class NnxTestHeaderGenerator:
             size=out_data_golden.numel(),
             golden=out_data_golden,
         )
-
-        # Render weights
+        # ------------------------------------------------------------------
+        # Render weights (CoutCinK)
+        # ------------------------------------------------------------------
         assert test.weight is not None
         weight_type = test.conf.weight_type
         weight_bits = weight_type._bits
@@ -389,17 +441,34 @@ class NnxTestHeaderGenerator:
         else:
             weight_offset = weight_bits - 1 #Changed from absolute value to shift value
         weight_out_ch, weight_in_ch, weight_ks_h, weight_ks_w = test.weight.shape
-        weight_data: np.ndarray = test.weight.numpy() + (2 ** (weight_bits - 1))
-        weight_init = self.weightEncode(
+        
+        if not test.is_gemm:
+            weight_data: np.ndarray = test.weight.numpy() + (2 ** (weight_bits - 1))
+            weight_init = self.weightEncode(
             weight_data.astype(np.uint8),
             weight_type._bits,
             test.conf.depthwise,
-        )
-        self.header_writer.generate_vector_files(
-            "weight", _type="uint8_t", size=weight_init.size, init=weight_init
-        )
-
+            )
+            self.header_writer.generate_vector_files(
+                "weight", _type="uint8_t", size=weight_init.size, init=weight_init
+            )
+        else:
+            # In GEMM mode the weights are corrected in hardware
+            # Layout for the weights in GEMM is the same as for the inputs
+            # Weights are signed
+            # TODO: CHange to signed, remove weight encode and remove the offset
+            weight_data: np.ndarray = test.weight.numpy() + (2 ** (weight_bits - 1))
+            weight_init = self.weightEncode(
+            weight_data.astype(np.uint8),
+            weight_type._bits,
+            test.conf.depthwise,
+            )
+            self.header_writer.generate_vector_files(
+                "weight", _type="uint8_t", size=weight_init.size, init=weight_init
+            )
+        # ------------------------------------------------------------------
         # Render scale
+        # ------------------------------------------------------------------
         if test.scale is not None:
             assert test.conf.scale_type is not None
             scale_ctype = test.conf.scale_type.ctype()
@@ -410,17 +479,20 @@ class NnxTestHeaderGenerator:
                 init=test.scale.ravel(),
             )
 
-        # Render bias
+        # ------------------------------------------------------------------
+        # Render bias (always generated even if zeros ‑‑ simplifies FW)
+        # ------------------------------------------------------------------
         if test.bias is not None:
             assert test.conf.bias_type is not None
-            bias_ctype = test.conf.bias_type.ctype()
-            self.header_writer.generate_vector_files(
-                "bias", _type=bias_ctype, size=test.bias.numel(), init=test.bias.ravel()
+            bs_ctype = test.conf.bias_type.ctype()
+            self.header_writer.generate_vector_files("bias", _type=bs_ctype, size=test.bias.numel(), init=test.bias.ravel()
             )
 
         global_shift = 0 if test.global_shift is None else int(test.global_shift.item())
 
-        # Render layer conf
+        # ------------------------------------------------------------------
+        # Layer configuration header
+        # ------------------------------------------------------------------
         self.header_writer.generate_defines_header(
             "layer_conf",
             {
@@ -469,5 +541,6 @@ class NnxTestHeaderGenerator:
                 "has_norm_quant": test.conf.has_norm_quant,
                 "has_bias": test.conf.has_bias,
                 "has_relu": test.conf.has_relu,
+                "is_gemm": test.conf.is_gemm,
             },
         )

@@ -167,3 +167,62 @@ class NeuralEngineFunctionalModel:
             )
 
         return output
+
+    def gemm(
+        self,
+        a_matrix: torch.Tensor,
+        b_matrix: torch.Tensor,
+        scale: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor],
+        global_shift: Optional[torch.Tensor],
+        out_type: IntegerType,
+        bias_type: Optional[IntegerType],
+        has_norm_quant: bool,
+        has_bias: bool,
+        has_relu: bool,
+        is_gemm: bool = True,
+        verbose: bool = False,
+        **kwargs,
+    ) -> torch.Tensor:
+        _ = kwargs
+        """
+        Performs A @ B, then optionally applies per-channel quantization:
+         - scale (int64 accum → int64 scaled)
+         - bias (int32)
+         - ReLU
+         - global_shift (right-shift)
+         - saturation to out_type
+
+        Args mirror convolution's quant options but for GEMM.
+        """
+        # 1) matrix multiply in high precision
+        output = torch.matmul(a_matrix, b_matrix).type(torch.int64)
+
+        # 2) cast into the 32-bit accumulator
+        output = NeuralEngineFunctionalModel._cast(
+            output, NeuralEngineFunctionalModel.ACCUMULATOR_TYPE, saturate=False
+        ).type(torch.int32)
+
+        if verbose:
+            print("INTERMEDIATE RESULTS (pre-normalization/requant):")
+            curr = np.get_printoptions()['threshold']
+            np.set_printoptions(threshold=np.inf)
+            print(self._tensor_to_hex(output))
+            np.set_printoptions(threshold=curr)
+
+        # 3) optional normalization + requant
+        if has_norm_quant:
+            assert scale is not None and global_shift is not None
+            output = self._norm_quant(
+                output,
+                scale,
+                bias,
+                global_shift,
+                out_type,
+                bias_type,
+                has_bias,
+                has_relu,
+                verbose,
+            )
+
+        return output
