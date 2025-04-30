@@ -170,8 +170,8 @@ class NeuralEngineFunctionalModel:
 
     def gemm(
         self,
-        a_matrix: torch.Tensor,
-        b_matrix: torch.Tensor,
+        b_matrix: torch.Tensor, # activations
+        a_matrix: torch.Tensor, # weights
         scale: Optional[torch.Tensor],
         bias: Optional[torch.Tensor],
         global_shift: Optional[torch.Tensor],
@@ -187,30 +187,47 @@ class NeuralEngineFunctionalModel:
         _ = kwargs
         """
         Performs A @ B, then optionally applies per-channel quantization:
-         - scale (int64 accum → int64 scaled)
-         - bias (int32)
-         - ReLU
+         - scale (int64 accum -> int64 scaled)
+         - bias (int32), should not be used for GEMM
+         - ReLU, should not be used for GEMM
          - global_shift (right-shift)
          - saturation to out_type
 
         Args mirror convolution's quant options but for GEMM.
         """
-        # 1) matrix multiply in high precision
+        if verbose:
+            print("INPUTS (B matrix):")
+            current_threshold = np.get_printoptions()['threshold']
+            np.set_printoptions(threshold=np.inf)
+            print(NeuralEngineFunctionalModel._tensor_to_hex(b_matrix))
+            # Print again with folding, so +2^(bits-1) is added to negative numbers
+            b_matrix_folded = b_matrix + (1 << (8 - 1))
+            print("INPUTS (B matrix, with folding):")
+            print(NeuralEngineFunctionalModel._tensor_to_hex(b_matrix_folded))
+            print("WEIGHTS (A matrix):")
+            print(NeuralEngineFunctionalModel._tensor_to_hex(a_matrix))
+            # Print again with folding, so +2^(bits-1) is added to negative numbers
+            a_matrix_folded = a_matrix + (1 << (8 - 1))
+            print("WEIGHTS (A matrix, with folding):")
+            print(NeuralEngineFunctionalModel._tensor_to_hex(a_matrix_folded))
+            np.set_printoptions(threshold=current_threshold)
+
+        # matrix multiply in 64bit
         output = torch.matmul(a_matrix, b_matrix).type(torch.int64)
 
-        # 2) cast into the 32-bit accumulator
+        # cast into the 32-bit accumulator
         output = NeuralEngineFunctionalModel._cast(
             output, NeuralEngineFunctionalModel.ACCUMULATOR_TYPE, saturate=False
         ).type(torch.int32)
 
         if verbose:
-            print("INTERMEDIATE RESULTS (pre-normalization/requant):")
+            print("INTERMEDIATE RESULTS (A*B, pre-normalization/requant):")
             curr = np.get_printoptions()['threshold']
             np.set_printoptions(threshold=np.inf)
             print(self._tensor_to_hex(output))
             np.set_printoptions(threshold=curr)
 
-        # 3) optional normalization + requant
+        # optional normalization + requant
         if has_norm_quant:
             assert scale is not None and global_shift is not None
             output = self._norm_quant(

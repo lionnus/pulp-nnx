@@ -1,5 +1,6 @@
 # Luka Macan <luka.macan@unibo.it>
 # Arpan Suravi Prasad <prasadar@iis.ee.ethz.ch>
+# Lionnus Kesting <lkesting@ethz.ch>
 #
 # Copyright 2023 ETH Zurich and University of Bologna
 #
