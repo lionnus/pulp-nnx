@@ -61,8 +61,8 @@ class NnxTestConf(BaseModel):
     is_gemm: bool = False
 
     # Test‑data generation helpers
-    synthetic_weights: bool
-    synthetic_inputs: bool
+    synthetic_weights: bool = False
+    synthetic_inputs: bool = False
 
     # ------------------------------------------------------------------
     # Validators
@@ -453,18 +453,12 @@ class NnxTestHeaderGenerator:
                 "weight", _type="uint8_t", size=weight_init.size, init=weight_init
             )
         else:
-            # In GEMM mode the weights are corrected in hardware
-            # Layout for the weights in GEMM is the same as for the inputs
-            # Weights are signed
-            # TODO: CHange to signed, remove weight encode and remove the offset
-            weight_data: np.ndarray = test.weight.numpy() + (2 ** (weight_bits - 1))
-            weight_init = self.weightEncode(
-            weight_data.astype(np.uint8),
-            weight_type._bits,
-            test.conf.depthwise,
-            )
+            # GEMM mode
+            weight_ctype = test.conf.weight_type.ctype()
+            # Cout, Cin, kernel_h, kernel_w shape
+            weight_init = test.weight.permute(0, 1, 2, 3).contiguous().view(-1).numpy() #TODO Remove permute
             self.header_writer.generate_vector_files(
-                "weight", _type="uint8_t", size=weight_init.size, init=weight_init
+                "weight", _type=weight_ctype, size=weight_init.size, init=weight_init
             )
         # ------------------------------------------------------------------
         # Render scale
@@ -480,7 +474,7 @@ class NnxTestHeaderGenerator:
             )
 
         # ------------------------------------------------------------------
-        # Render bias (always generated even if zeros ‑‑ simplifies FW)
+        # Render bias (always generated even if zeros)
         # ------------------------------------------------------------------
         if test.bias is not None:
             assert test.conf.bias_type is not None
