@@ -268,15 +268,22 @@ class NnxTestGenerator:
         # ------------------------------------------------------------------
         # Shape bookkeeping
         # ------------------------------------------------------------------
-        input_shape = (1, conf.in_channel, conf.in_height, conf.in_width)
-        weight_shape = (
-            conf.out_channel,
-            1 if conf.depthwise else conf.in_channel,
-            conf.kernel_shape.height,
-            conf.kernel_shape.width,
-        )
-        scale_shape = (1, conf.out_channel, 1, 1)
-        bias_shape = (1, conf.out_channel, 1, 1)
+        if conf.is_gemm:
+            input_shape = (conf.in_channel, conf.in_height*conf.in_width)
+            weight_shape = (conf.out_channel, conf.in_channel)
+            scale_shape = (conf.out_channel,1) # TODO: How many diff scales?
+            bias_shape = (conf.out_channel,1)
+        else:
+            #Convolution mode
+            input_shape = (1, conf.in_channel, conf.in_height, conf.in_width)
+            weight_shape = (
+                conf.out_channel,
+                1 if conf.depthwise else conf.in_channel,
+                conf.kernel_shape.height,
+                conf.kernel_shape.width,
+            )
+            scale_shape = (1, conf.out_channel, 1, 1)
+            bias_shape = (1, conf.out_channel, 1, 1)
 
         # ------------------------------------------------------------------
         # Input tensor
@@ -340,22 +347,19 @@ class NnxTestGenerator:
                     **conf.__dict__,
                     "out_type": NeuralEngineFunctionalModel.ACCUMULATOR_TYPE,
                 }
-                output = NeuralEngineFunctionalModel().convolution(
-                    input,
-                    weight,
-                    scale,
-                    bias,
-                    global_shift,
-                    verbose=False,
-                    **conv_kwargs,
-                )
+                if conf.is_gemm:
+                    output = NeuralEngineFunctionalModel().gemm(
+                        input,weight,scale,bias,global_shift,verbose=False,**conv_kwargs)
+                else:
+                    output = NeuralEngineFunctionalModel().convolution(
+                        input, weight, scale, bias, global_shift, verbose=False, **conv_kwargs)
                 global_shift = NnxTestGenerator._calculate_global_shift(
                     output, conf.out_type
                 )
 
         if conf.is_gemm:
             #TODO Call .gemm method for is_gemm
-            output = NeuralEngineFunctionalModel().convolution(
+            output = NeuralEngineFunctionalModel().gemm(
                 input, weight, scale, bias, global_shift, verbose=verbose, **conf.__dict__
             )
         else:
@@ -405,15 +409,27 @@ class NnxTestHeaderGenerator:
 
     def generate(self, test_name: str, test: NnxTest):
         assert test.input is not None and test.output is not None
-        _, in_channel, in_height, in_width = test.input.shape
-        _, out_channel, out_height, out_width = test.output.shape
+        if test.conf.is_gemm:
+            out_channel, in_channel = test.weight.shape
+            in_height = test.conf.in_height
+            in_width = test.conf.in_width
+            out_height = in_height
+            out_width = in_width
+        else:
+            _, in_channel, in_height, in_width = test.input.shape
+            _, out_channel, out_height, out_width = test.output.shape
 
         # ------------------------------------------------------------------
         # Render input tensor
         # ------------------------------------------------------------------
-        in_ctype = test.conf.in_type.ctype()
-        in_signed = test.conf.in_type._signed
-        in_data = test.input.permute(0, 2, 3, 1).ravel()
+        if test.conf.is_gemm:
+            in_ctype = test.conf.in_type.ctype()
+            in_signed = test.conf.in_type._signed
+            in_data = test.input.permute(1,0).ravel()
+        else:
+            in_ctype = test.conf.in_type.ctype()
+            in_signed = test.conf.in_type._signed
+            in_data = test.input.permute(0, 2, 3, 1).ravel()
         self.header_writer.generate_vector_files(
             "input", _type=in_ctype, size=in_data.numel(), init=in_data
         )
@@ -421,8 +437,12 @@ class NnxTestHeaderGenerator:
         # ------------------------------------------------------------------
         # Render golden output tensor
         # ------------------------------------------------------------------
-        out_ctype = test.conf.out_type.ctype()
-        out_data_golden = test.output.permute(0, 2, 3, 1).ravel()
+        if test.conf.is_gemm:
+            out_ctype = test.conf.out_type.ctype()
+            out_data_golden = test.output.permute(1,0).ravel()
+        else:
+            out_ctype = test.conf.out_type.ctype()
+            out_data_golden = test.output.permute(0, 2, 3, 1).ravel()
         self.header_writer.generate_vector_files(
             "output",
             _type=out_ctype,
@@ -440,9 +460,20 @@ class NnxTestHeaderGenerator:
             weight_offset = 0
         else:
             weight_offset = weight_bits - 1 #Changed from absolute value to shift value
-        weight_out_ch, weight_in_ch, weight_ks_h, weight_ks_w = test.weight.shape
         
-        if not test.conf.is_gemm:
+        if test.conf.is_gemm:
+            # GEMM mode
+            weight_out_ch, weight_in_ch = test.weight.shape
+            weight_ks_h = 1
+            weight_ks_w = 1
+            weight_ctype = test.conf.weight_type.ctype()
+            # Cout, Cin, kernel_h, kernel_w shape
+            weight_init = test.weight.permute(0, 1).contiguous().view(-1).numpy() #TODO Remove permute
+            self.header_writer.generate_vector_files(
+                "weight", _type=weight_ctype, size=weight_init.size, init=weight_init
+            )
+        else:
+            weight_out_ch, weight_in_ch, weight_ks_h, weight_ks_w = test.weight.shape
             weight_data: np.ndarray = test.weight.numpy() + (2 ** (weight_bits - 1))
             weight_init = self.weightEncode(
             weight_data.astype(np.uint8),
@@ -452,14 +483,7 @@ class NnxTestHeaderGenerator:
             self.header_writer.generate_vector_files(
                 "weight", _type="uint8_t", size=weight_init.size, init=weight_init
             )
-        else:
-            # GEMM mode
-            weight_ctype = test.conf.weight_type.ctype()
-            # Cout, Cin, kernel_h, kernel_w shape
-            weight_init = test.weight.permute(0, 1, 2, 3).contiguous().view(-1).numpy() #TODO Remove permute
-            self.header_writer.generate_vector_files(
-                "weight", _type=weight_ctype, size=weight_init.size, init=weight_init
-            )
+            
         # ------------------------------------------------------------------
         # Render scale
         # ------------------------------------------------------------------
