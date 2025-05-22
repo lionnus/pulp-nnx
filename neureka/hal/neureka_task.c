@@ -166,15 +166,25 @@ void neureka_task_set_strides(neureka_task_t *task, const uint32_t k_in,
                                           .d2 = h_out_stride};
   task->data.cfg.output_stride = output_stride;
 
-  if (task->kernel_shape == 1) { // 1x1
+  if (task->kernel_shape == 1 && (task->data.cfg.conf0 & NEUREKA_FLAG_INPUT_SIGNED)) // TODO: Remove dependency of first setting signed input/have proper GEMM mode
+  { // 1x1 GEMM mode
+    task->data.cfg.weights_stride.d0 = 1;
+    task->data.cfg.weights_stride.d1 = k_in;
+  }
+  else if (task->kernel_shape == 1)
+  { // 1x1 Conv
     task->data.cfg.weights_stride.d0 = NEUREKA_WEIGHT_BANDWIDTH_BYTES_1x1;
     task->data.cfg.weights_stride.d1 =
         (NEUREKA_WEIGHT_BANDWIDTH_BYTES_1x1 / 8) * task->qw * num_k_in;
-  } else if (!task->depthwise) { // 3x3
+  }
+  else if (!task->depthwise)
+  { // 3x3 Conv
     task->data.cfg.weights_stride.d0 = NEUREKA_WEIGHT_BANDWIDTH_BYTES_3x3;
     task->data.cfg.weights_stride.d1 =
         NEUREKA_WEIGHT_BANDWIDTH_BYTES_3x3 * task->qw * num_k_in;
-  } else { // 3x3 depthwise
+  }
+  else
+  { // 3x3 depthwise Conv
     task->data.cfg.weights_stride.d0 = NEUREKA_WEIGHT_BANDWIDTH_BYTES_3x3;
     task->data.cfg.weights_stride.d1 = 0;
   }
