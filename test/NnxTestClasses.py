@@ -330,16 +330,13 @@ class NnxTestGenerator:
                 scale = NnxTestGenerator._random_data(
                     conf.scale_type, shape=scale_shape, extremes=scale_extremes
                 )
-            if conf.has_bias and bias is None and conf.is_gemm == False:
+            if conf.has_bias and bias is None:
                 assert conf.bias_type is not None
                 # same limits as in old NE16 generator
                 bias_extremes = (-(1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT), (1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT)-1)
                 bias = NnxTestGenerator._random_data(
                     conf.bias_type, shape=bias_shape, extremes=bias_extremes
                 ).type(torch.int32)
-            elif conf.has_bias and bias is None and conf.is_gemm == True:
-                # Set bias to 0 for GEMM (TODO for Neureka-TX -> remove bias phase for gemm)
-                bias = torch.zeros(bias_shape, dtype=torch.int64)
                 
             if global_shift is None:
                 global_shift = torch.Tensor([0]).type(torch.int32)
