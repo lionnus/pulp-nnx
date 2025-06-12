@@ -155,6 +155,13 @@ void neureka_task_set_ptrs_norm_quant(neureka_task_t *task, uint32_t scale_ptr,
   task->data.scale_bias_ptr = bias_ptr;
 }
 
+void neureka_task_set_ptrs_norm_quant2(neureka_task_t *task, uint32_t scale_ptr,
+                                      uint32_t shift_ptr, uint32_t bias_ptr) {
+  task->data.scale2_ptr = scale_ptr;
+  task->data.scale_shift2_ptr = shift_ptr;
+  task->data.scale_bias2_ptr = bias_ptr;
+}
+
 void neureka_task_set_strides(neureka_task_t *task, const uint32_t k_in,
                               const uint32_t h_in_stride,
                               const uint32_t w_in_stride,

@@ -118,6 +118,9 @@ typedef struct neureka_task_data_t {
   uint32_t scale_shift_ptr;
   uint32_t scale_bias_ptr;
   neureka_cfg_t cfg;
+  uint32_t scale2_ptr;
+  uint32_t scale_shift2_ptr;
+  uint32_t scale_bias2_ptr;
 } neureka_task_data_t;
 
 typedef struct neureka_task_t {

@@ -181,6 +181,9 @@ class NeuralEngineFunctionalModel:
         has_norm_quant: bool,
         has_bias: bool,
         has_relu: bool,
+        scale2: Optional[torch.Tensor] = None,  # For post-polyapprox normquant
+        bias2: Optional[torch.Tensor] = None,   # For post-polyapprox normquant  
+        global_shift2: Optional[torch.Tensor] = None,  # For post-polyapprox normquant
         is_gemm: bool = True,
         polyapprox_degree: int = 0,
         verbose: bool = False,
@@ -271,12 +274,16 @@ class NeuralEngineFunctionalModel:
         
             # Second normalization + requant after polynomial approximation
             if has_norm_quant:
-                assert scale is not None and global_shift is not None
+                # Use separate scale/bias/shift parameters if provided for post-polyapprox
+                post_scale = scale2 if scale2 is not None else scale
+                post_bias = bias2 if bias2 is not None else bias
+                post_shift = global_shift2 if global_shift2 is not None else global_shift
+                
                 output = self._norm_quant(
                     output,
-                    scale,
-                    bias,
-                    global_shift,
+                    post_scale,
+                    post_bias,
+                    post_shift,
                     out_type,
                     bias_type,
                     has_bias,

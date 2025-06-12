@@ -129,6 +129,9 @@ class NnxTest:
     _SCALE_NAME = "scale.pt"
     _BIAS_NAME = "bias.pt"
     _GLOBAL_SHIFT_NAME = "global_shift.pt"
+    _SCALE2_NAME = "scale2.pt"
+    _BIAS2_NAME = "bias2.pt"
+    _GLOBAL_SHIFT2_NAME = "global_shift2.pt"
 
     def __init__(
         self,
@@ -139,6 +142,9 @@ class NnxTest:
         scale: Optional[torch.Tensor] = None,
         bias: Optional[torch.Tensor] = None,
         global_shift: Optional[torch.Tensor] = torch.Tensor([0]),
+        scale2: Optional[torch.Tensor] = None,
+        bias2: Optional[torch.Tensor] = None,
+        global_shift2: Optional[torch.Tensor] = None,
         is_gemm: Optional[bool] = False,
         polyapprox_degree: int = 0,
         synthetic_weights: Optional[bool] = False,
@@ -151,6 +157,9 @@ class NnxTest:
         self.scale = scale
         self.bias = bias
         self.global_shift = global_shift
+        self.scale2 = scale2
+        self.bias2 = bias2
+        self.global_shift2 = global_shift2
         self.is_gemm = is_gemm
         self.polyapprox_degree = polyapprox_degree
         self.synthetic_weights = synthetic_weights
@@ -188,6 +197,14 @@ class NnxTest:
             torch.save(
                 self.global_shift, os.path.join(path, NnxTest._GLOBAL_SHIFT_NAME)
             )
+        if self.scale2 is not None:
+            torch.save(self.scale2, os.path.join(path, NnxTest._SCALE2_NAME))
+        if self.bias2 is not None:
+            torch.save(self.bias2, os.path.join(path, NnxTest._BIAS2_NAME))
+        if self.global_shift2 is not None:
+            torch.save(
+                self.global_shift2, os.path.join(path, NnxTest._GLOBAL_SHIFT2_NAME)
+            )
 
     def save(self, path: Union[str, os.PathLike]) -> None:
         self.save_conf(path)
@@ -218,8 +235,13 @@ class NnxTest:
         scale = load_if_exist(NnxTest._SCALE_NAME)
         bias = load_if_exist(NnxTest._BIAS_NAME)
         global_shift = load_if_exist(NnxTest._GLOBAL_SHIFT_NAME)
-
-        return cls(conf, input, output, weight, scale, bias, global_shift)
+        scale2 = load_if_exist(NnxTest._SCALE2_NAME)
+        bias2 = load_if_exist(NnxTest._BIAS2_NAME)
+        global_shift2 = load_if_exist(NnxTest._GLOBAL_SHIFT2_NAME)
+        return cls(
+            conf, input, output, weight, scale, bias, global_shift,
+            scale2, bias2, global_shift2
+        )
 
 
 class NnxTestGenerator:
@@ -252,7 +274,7 @@ class NnxTestGenerator:
             return torch.randint(max(_type.min, extremes[0]), min(_type.max, extremes[1]), size=shape)
 
     @staticmethod
-    def _random_data_normal(_type: IntegerType, shape: Tuple, mean: float64 = 0.5, std: float64=0.27):
+    def _random_data_normal(_type: IntegerType, shape: Tuple, mean: float = 0.5, std: float=0.27):
         return torch.floor(torch.clip(torch.normal(mean, std, size=shape), _type.min, _type.max)).type(torch.int64)
 
     @staticmethod
@@ -263,6 +285,9 @@ class NnxTestGenerator:
         scale: Optional[torch.Tensor] = None,
         bias: Optional[torch.Tensor] = None,
         global_shift: Optional[torch.Tensor] = None,
+        scale2: Optional[torch.Tensor] = None,
+        bias2: Optional[torch.Tensor] = None,
+        global_shift2: Optional[torch.Tensor] = None,
         verbose: bool = False,
     ) -> NnxTest:
         """Generate (or regenerate) a test‑vector bundle from a configuration."""
@@ -341,6 +366,7 @@ class NnxTestGenerator:
                     conf.bias_type, shape=bias_shape, extremes=bias_extremes
                 ).type(torch.int32)
                 
+            # Calculate global_shift for first norm-quant
             if global_shift is None:
                 global_shift = torch.Tensor([0]).type(torch.int32)
                 conv_kwargs = {
@@ -357,10 +383,54 @@ class NnxTestGenerator:
                 global_shift = NnxTestGenerator._calculate_global_shift(
                     output, conf.out_type
                 )
+            
+            # For GEMM with polynomial approximation, handle second norm-quant parameters
+            if conf.is_gemm and conf.polyapprox_degree > 0:
+                # Generate scale2 if not provided
+                if scale2 is None and conf.scale_type is not None:
+                    scale_extremes = (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_32BIT)-1) if conf.scale_type._bits == 32 else \
+                                     (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_16BIT)-1) if conf.scale_type._bits == 16 else \
+                                     (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_8BIT)-1)  if conf.scale_type._bits == 8  else (1, (1<<18)-1)
+                    scale2 = NnxTestGenerator._random_data(
+                        conf.scale_type, shape=scale_shape, extremes=scale_extremes
+                    )
+                
+                # Generate bias2 if not provided and has_bias is True
+                if conf.has_bias and bias2 is None and conf.bias_type is not None:
+                    bias_extremes = (-(1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT), (1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT)-1)
+                    bias2 = NnxTestGenerator._random_data(
+                        conf.bias_type, shape=bias_shape, extremes=bias_extremes
+                    ).type(torch.int32)
+                
+                # Calculate global_shift2 for second norm-quant
+                if global_shift2 is None:
+                    # First run to get intermediate result after polynomial approximation
+                    global_shift2 = torch.Tensor([0]).type(torch.int32)
+                    conv_kwargs = {
+                        **conf.__dict__,
+                        "scale2": scale2,
+                        "bias2": bias2,
+                        "global_shift2": global_shift2,
+                    }
+                    output = NeuralEngineFunctionalModel().gemm(
+                        input, weight, scale, bias, global_shift, verbose=False, **conv_kwargs
+                    )
+                    global_shift2 = NnxTestGenerator._calculate_global_shift(
+                        output, conf.out_type
+                    )
 
+        # ------------------------------------------------------------------
+        # Generate final output with all parameters
+        # ------------------------------------------------------------------        
         if conf.is_gemm:
+            conv_kwargs = {
+                **conf.__dict__,
+                "scale2": scale2,
+                "bias2": bias2,
+                "global_shift2": global_shift2,
+            }
             output = NeuralEngineFunctionalModel().gemm(
-                input, weight, scale, bias, global_shift, verbose=verbose, **conf.__dict__
+                input, weight, scale, bias, global_shift, verbose=verbose, **conv_kwargs
             )
         else:
             output = NeuralEngineFunctionalModel().convolution(
@@ -375,6 +445,9 @@ class NnxTestGenerator:
             scale=scale,
             bias=bias,
             global_shift=global_shift,
+            scale2=scale2,
+            bias2=bias2,
+            global_shift2=global_shift2,
             synthetic_inputs=conf.synthetic_inputs,
             synthetic_weights=conf.synthetic_weights,
         )
@@ -384,9 +457,9 @@ class NnxTestGenerator:
     # -----------------------------------------------------------------------
     @staticmethod
     def regenerate(test: NnxTest, regen_tensors: Set[str]) -> NnxTest:
-        test_tensors = set(["input", "output", "weight", "scale", "bias"])
+        test_tensors = set(["input", "output", "weight", "scale", "bias", "scale2", "bias2"])
         load_tensors = test_tensors - regen_tensors
-        kwargs = {tensor: getattr(test, tensor) for tensor in load_tensors}
+        kwargs = {tensor: getattr(test, tensor) for tensor in load_tensors if hasattr(test, tensor)}
         return NnxTestGenerator.from_conf(test.conf, **kwargs)
 
 
@@ -498,7 +571,7 @@ class NnxTestHeaderGenerator:
             )
 
         # ------------------------------------------------------------------
-        # Render bias (always generated even if zeros)
+        # Render bias
         # ------------------------------------------------------------------
         if test.bias is not None:
             assert test.conf.bias_type is not None
@@ -506,7 +579,34 @@ class NnxTestHeaderGenerator:
             self.header_writer.generate_vector_files("bias", _type=bs_ctype, size=test.bias.numel(), init=test.bias.ravel()
             )
 
+        # ------------------------------------------------------------------
+        # Render scale2 (for GEMM post-polyapprox)
+        # ------------------------------------------------------------------
+        if test.scale2 is not None:
+            assert test.conf.scale_type is not None
+            scale2_ctype = test.conf.scale_type.ctype()
+            self.header_writer.generate_vector_files(
+                "scale2",
+                _type=scale2_ctype,
+                size=test.scale2.numel(),
+                init=test.scale2.ravel(),
+            )
+
+        # ------------------------------------------------------------------
+        # Render bias2 (for GEMM post-polyapprox)
+        # ------------------------------------------------------------------
+        if test.bias2 is not None:
+            assert test.conf.bias_type is not None
+            bs2_ctype = test.conf.bias_type.ctype()
+            self.header_writer.generate_vector_files(
+                "bias2", 
+                _type=bs2_ctype, 
+                size=test.bias2.numel(), 
+                init=test.bias2.ravel()
+            )
+
         global_shift = 0 if test.global_shift is None else int(test.global_shift.item())
+        global_shift2 = 0 if test.global_shift2 is None else int(test.global_shift2.item())
 
         # ------------------------------------------------------------------
         # Layer configuration header
@@ -546,6 +646,16 @@ class NnxTestHeaderGenerator:
                     if test.conf.bias_type is not None
                     else 0
                 },
+                "scale2": {
+                    "bits": test.conf.scale_type._bits
+                    if test.conf.scale_type is not None
+                    else 0
+                },
+                "bias2": {
+                    "bits": test.conf.bias_type._bits
+                    if test.conf.bias_type is not None
+                    else 0
+                },
                 "padding": {
                     "top": test.conf.padding.top,
                     "bottom": test.conf.padding.bottom,
@@ -556,6 +666,7 @@ class NnxTestHeaderGenerator:
                 "stride": test.conf.stride.model_dump(),
                 "groups": test.conf.in_channel if test.conf.depthwise else 1,
                 "outshift": global_shift,
+                "outshift2": global_shift2,
                 "has_norm_quant": test.conf.has_norm_quant,
                 "has_bias": test.conf.has_bias,
                 "has_relu": test.conf.has_relu,
