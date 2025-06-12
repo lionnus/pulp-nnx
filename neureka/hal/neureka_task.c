@@ -90,6 +90,8 @@ void neureka_task_set_norm_quant(neureka_task_t *task, neureka_quant_t quant,
                           (quant.shift_amount << 16) | norm.mode |
                           norm.flag_bias << NEUREKA_SHIFT_FLAG_NORM_BIAS |
                           norm.flag_shift << NEUREKA_SHIFT_FLAG_NORM_SHIFT;
+  task->data.cfg.conf1 &= ~(NEUREKA_MASK_SHIFT_AMOUNT2);
+  task->data.cfg.conf1 |= (quant.shift_amount2);
 }
 
 void neureka_task_set_weight_offset(

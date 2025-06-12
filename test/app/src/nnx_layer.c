@@ -180,6 +180,11 @@ static void task_prepare(nnx_task_t *task) {
 
   nnx_task_set_norm_quant(task,
                           (nnx_quant_t){.shift_amount = OUTSHIFT,
+#ifdef OUTSHIFT2
+                                        .shift_amount2 = OUTSHIFT2,
+#else
+                                        .shift_amount2 = 0,
+#endif
                                         .function = quant_function,
                                         .flag_rounding = nnxTaskFlagFalse},
                           (nnx_norm_t){.mode = normMode,

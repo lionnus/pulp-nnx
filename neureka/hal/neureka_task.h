@@ -73,6 +73,7 @@ typedef enum neureka_quant_function_e {
 typedef struct neureka_quant_t {
   // Shift amount must be in range 0x00-0x1F
   uint8_t shift_amount;
+  uint8_t shift_amount2; // Only used for polyapprox
   neureka_quant_function_e function;
   neureka_task_flag_e flag_rounding;
 } neureka_quant_t;
@@ -108,6 +109,7 @@ typedef struct neureka_cfg_t {
   uint32_t weight_offset_factor;
   uint32_t filter_mask;
   uint32_t conf0;
+  uint32_t conf1;
 } neureka_cfg_t;
 
 typedef struct neureka_task_data_t {
@@ -118,6 +120,7 @@ typedef struct neureka_task_data_t {
   uint32_t scale_shift_ptr;
   uint32_t scale_bias_ptr;
   neureka_cfg_t cfg;
+  uint32_t streamin_ptr;
   uint32_t scale2_ptr;
   uint32_t scale_shift2_ptr;
   uint32_t scale_bias2_ptr;
