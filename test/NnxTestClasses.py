@@ -1,5 +1,5 @@
 # Luka Macan <luka.macan@unibo.it>
-# Extended by Lionnus Kesting <lkesting@ethz.ch>
+# NEUREKA-TX: Lionnus Kesting <lkesting@ethz.ch>
 #
 # Copyright 2023 ETH Zurich and University of Bologna
 #
@@ -59,6 +59,7 @@ class NnxTestConf(BaseModel):
     
     # GEMM Operation mode flag
     is_gemm: bool = False
+    polyapprox_degree: int = 0  # Poly approximation, 0 for none, 1 for linear, 2 for quadratic
 
     # Test‑data generation helpers
     synthetic_weights: bool = False
@@ -139,6 +140,7 @@ class NnxTest:
         bias: Optional[torch.Tensor] = None,
         global_shift: Optional[torch.Tensor] = torch.Tensor([0]),
         is_gemm: Optional[bool] = False,
+        polyapprox_degree: int = 0,
         synthetic_weights: Optional[bool] = False,
         synthetic_inputs: Optional[bool] = False,
     ) -> None:
@@ -150,6 +152,7 @@ class NnxTest:
         self.bias = bias
         self.global_shift = global_shift
         self.is_gemm = is_gemm
+        self.polyapprox_degree = polyapprox_degree
         self.synthetic_weights = synthetic_weights
         self.synthetic_inputs = synthetic_inputs
 
@@ -343,6 +346,7 @@ class NnxTestGenerator:
                 conv_kwargs = {
                     **conf.__dict__,
                     "out_type": NeuralEngineFunctionalModel.ACCUMULATOR_TYPE,
+                    "skip_polyapprox_degree": True, # Skip to calculate first norm quant shift
                 }
                 if conf.is_gemm:
                     output = NeuralEngineFunctionalModel().gemm(
@@ -355,7 +359,6 @@ class NnxTestGenerator:
                 )
 
         if conf.is_gemm:
-            #TODO Call .gemm method for is_gemm
             output = NeuralEngineFunctionalModel().gemm(
                 input, weight, scale, bias, global_shift, verbose=verbose, **conf.__dict__
             )
@@ -557,5 +560,6 @@ class NnxTestHeaderGenerator:
                 "has_bias": test.conf.has_bias,
                 "has_relu": test.conf.has_relu,
                 "is_gemm": test.conf.is_gemm,
+                "polyapprox_degree": test.conf.polyapprox_degree,
             },
         )

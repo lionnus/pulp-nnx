@@ -44,6 +44,11 @@ typedef enum neureka_activation_prefetch_e {
   activationPrefetchOff = NEUREKA_FLAG_ACTIVATION_PREFETCH_OFF
 } neureka_activation_prefetch_e;
 
+typedef enum neureka_polyapprox_degree_e {
+  polyApproxDegree1 = NEUREKA_POLYAPPROX_DEGREE_1,
+  polyApproxDegree2 = NEUREKA_POLYAPPROX_DEGREE_2
+} neureka_polyapprox_degree_e;
+
 typedef enum {
   normMode8Bit = NEUREKA_NORM_MODE_8BIT,
   normMode32Bit = NEUREKA_NORM_MODE_32BIT

@@ -75,6 +75,7 @@ class NeuralEngineFunctionalModel:
         if has_relu:
             tensor = F.relu(tensor)
 
+        # Global shift
         tensor = tensor >> global_shift
 
         if verbose:
@@ -181,7 +182,9 @@ class NeuralEngineFunctionalModel:
         has_bias: bool,
         has_relu: bool,
         is_gemm: bool = True,
+        polyapprox_degree: int = 0,
         verbose: bool = False,
+        skip_polyapprox_degree: bool = False,  # New parameter to skip poly approx
         **kwargs,
     ) -> torch.Tensor:
         _ = kwargs
@@ -227,7 +230,7 @@ class NeuralEngineFunctionalModel:
             print(self._tensor_to_hex(output))
             np.set_printoptions(threshold=curr)
 
-        # optional normalization + requant
+        # First normalization + requant (always done if has_norm_quant)
         if has_norm_quant:
             assert scale is not None and global_shift is not None
             output = self._norm_quant(
@@ -241,5 +244,44 @@ class NeuralEngineFunctionalModel:
                 has_relu,
                 verbose,
             )
+            
+        # Polynomial approximation (only if not skipped and polyapprox_degree > 0)
+        if polyapprox_degree > 0 and not skip_polyapprox_degree:
+            assert polyapprox_degree in [1, 2], "polyapprox_degree must be 1 (linear) or 2 (quadratic)"
+            
+            # Apply polynomial approximation
+            output = output * -12
+            
+            if verbose:
+                print("INTERMEDIATE RESULTS (after poly mult):")
+                current_threshold = np.get_printoptions()["threshold"]
+                np.set_printoptions(threshold=np.inf)
+                print(NeuralEngineFunctionalModel._tensor_to_hex(output))
+                np.set_printoptions(threshold=current_threshold)
+            
+            output = output + 5678
+            # TODO: Put proper polynomial approximation here
+            
+            if verbose:
+                print("INTERMEDIATE RESULTS (after poly bias):")
+                current_threshold = np.get_printoptions()["threshold"]
+                np.set_printoptions(threshold=np.inf)
+                print(NeuralEngineFunctionalModel._tensor_to_hex(output))
+                np.set_printoptions(threshold=current_threshold)
+        
+            # Second normalization + requant after polynomial approximation
+            if has_norm_quant:
+                assert scale is not None and global_shift is not None
+                output = self._norm_quant(
+                    output,
+                    scale,
+                    bias,
+                    global_shift,
+                    out_type,
+                    bias_type,
+                    has_bias,
+                    has_relu,
+                    verbose,
+                )
 
         return output

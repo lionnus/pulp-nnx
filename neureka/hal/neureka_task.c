@@ -120,6 +120,12 @@ void neureka_task_set_activation_prefetch(neureka_task_t *task,
   task->data.cfg.conf0 |= activation_prefetch;
 }
 
+void neureka_task_set_polyapprox_degree(neureka_task_t *task,
+                                        neureka_polyapprox_degree_e degree) {
+  task->data.cfg.conf0 &= ~NEUREKA_MASK_FLAG_POLYAPPROX_DEGREE;
+  task->data.cfg.conf0 |= degree;
+}
+
 /** neureka_pad_ptr
  *
  * Calculate the pointer to the start of the ptr as if
