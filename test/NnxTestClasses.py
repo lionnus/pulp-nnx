@@ -371,7 +371,8 @@ class NnxTestGenerator:
                 global_shift = torch.Tensor([0]).type(torch.int32)
                 conv_kwargs = {
                     **conf.__dict__,
-                    "out_type": NeuralEngineFunctionalModel.ACCUMULATOR_TYPE,
+                    "norm1_out_type": NeuralEngineFunctionalModel.ACCUMULATOR_TYPE,
+                    "norm2_out_type": NeuralEngineFunctionalModel.ACCUMULATOR_TYPE, # doesnt matter since not used in this pass
                     "skip_polyapprox_degree": True, # Skip to calculate first norm quant shift
                 }
                 if conf.is_gemm:
@@ -404,6 +405,7 @@ class NnxTestGenerator:
                 
                 # Calculate global_shift2 for second norm-quant
                 if global_shift2 is None:
+                    
                     # First run to get intermediate result after polynomial approximation
                     global_shift2 = torch.Tensor([0]).type(torch.int32)
                     conv_kwargs = {
@@ -411,6 +413,8 @@ class NnxTestGenerator:
                         "scale2": scale2,
                         "bias2": bias2,
                         "global_shift2": global_shift2,
+                        "norm1_out_type": IntegerType(name="int8"),
+                        "norm2_out_type": NeuralEngineFunctionalModel.ACCUMULATOR_TYPE,
                     }
                     output = NeuralEngineFunctionalModel().gemm(
                         input, weight, scale, bias, global_shift, verbose=False, **conv_kwargs
@@ -428,6 +432,8 @@ class NnxTestGenerator:
                 "scale2": scale2,
                 "bias2": bias2,
                 "global_shift2": global_shift2,
+                "norm1_out_type": IntegerType(name="int8"),
+                "norm2_out_type": IntegerType(name="int8"),
             }
             output = NeuralEngineFunctionalModel().gemm(
                 input, weight, scale, bias, global_shift, verbose=verbose, **conv_kwargs
