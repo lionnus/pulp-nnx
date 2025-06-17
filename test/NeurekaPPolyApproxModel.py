@@ -169,6 +169,9 @@ class PiecewisePolyApproxModel:
         intercepts_q = np.round(self.intercepts * output_scale).astype(np.int32)
         boundaries_q = np.round(self.boundaries * self.input_quantization).astype(np.int32)
         
+        # Clamp boundaries to valid 8-bit signed range [-128, 127]
+        boundaries_q = np.clip(boundaries_q, -128, 127)
+        
         # Check bit constraints
         slope_max = 2**(slope_bits - 1) - 1
         slope_min = -2**(slope_bits - 1)
@@ -478,16 +481,18 @@ def apply_packed_approximation(
             
             boundaries[i] = boundary_val
     
-    # Map boundaries back to input range
+    # Map boundaries back to input range with proper 8-bit signed clamping
     if boundary_packing_info:
         max_val = boundary_packing_info['max_val']
         min_bound = boundary_packing_info['min_bound']
         max_bound = boundary_packing_info['max_bound']
         boundaries = (boundaries / max_val * (max_bound - min_bound) + min_bound).astype(np.int32)
     else:
-        # Default mapping for backward compatibility
+        # Default mapping with proper 8-bit signed range [-128, 127]
         max_val = (1 << boundary_bits) - 1
-        boundaries = (boundaries / max_val * 256 - 128).astype(np.int32)
+        boundaries = (boundaries / max_val * 255 - 127.5).astype(np.int32)
+        # Clamp to valid 8-bit signed range
+        boundaries = np.clip(boundaries, -128, 127)
     
     # Skip to coefficient section
     bit_pos = total_boundary_bits
