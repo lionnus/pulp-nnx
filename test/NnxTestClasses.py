@@ -30,6 +30,7 @@ from pydantic import BaseModel, PositiveInt, field_validator, model_validator
 from HeaderWriter import HeaderWriter
 from NeuralEngineFunctionalModel import NeuralEngineFunctionalModel
 from TestClasses import IntegerType, KernelShape, Padding, Stride, implies
+from NeurekaPPolyApproxModel import PiecewisePolyApproxModel
 
 
 class NnxTestConf(BaseModel):
@@ -60,6 +61,12 @@ class NnxTestConf(BaseModel):
     # GEMM Operation mode flag
     is_gemm: bool = False
     polyapprox_degree: int = 0  # Poly approximation, 0 for none, 1 for linear, 2 for quadratic
+    polyapprox_segments: int = 16  # Number of segments for piecewise approximation
+    polyapprox_bounds_bitwidth: int = 8 # Number of bits for each bound value
+    polyapprox_coeffs_mul_bitwidth: int = 8 # Number of bits for each multiplication coefficient value
+    polyapprox_coeffs_add_bitwidth: int = 32 # Number of bits for each addition coefficient value
+
+    polyapprox_func: str = "gelu"  # Function to approximate: check NeurekaPPolyApproxModel for available functions
 
     # Test‑data generation helpers
     synthetic_weights: bool = False
@@ -132,6 +139,7 @@ class NnxTest:
     _SCALE2_NAME = "scale2.pt"
     _BIAS2_NAME = "bias2.pt"
     _GLOBAL_SHIFT2_NAME = "global_shift2.pt"
+    _PPOLY_PARAMS_NAME = "ppolyapprox.pt"
 
     def __init__(
         self,
@@ -147,6 +155,8 @@ class NnxTest:
         global_shift2: Optional[torch.Tensor] = None,
         is_gemm: Optional[bool] = False,
         polyapprox_degree: int = 0,
+        ppoly_params: Optional[torch.Tensor] = None,
+        ppoly_model: Optional[PiecewisePolyApproxModel] = None,
         synthetic_weights: Optional[bool] = False,
         synthetic_inputs: Optional[bool] = False,
     ) -> None:
@@ -162,6 +172,8 @@ class NnxTest:
         self.global_shift2 = global_shift2
         self.is_gemm = is_gemm
         self.polyapprox_degree = polyapprox_degree
+        self.ppoly_params = ppoly_params
+        self.ppoly_model = ppoly_model
         self.synthetic_weights = synthetic_weights
         self.synthetic_inputs = synthetic_inputs
 
@@ -205,6 +217,19 @@ class NnxTest:
             torch.save(
                 self.global_shift2, os.path.join(path, NnxTest._GLOBAL_SHIFT2_NAME)
             )
+        
+        # Pack parameters only when saving
+        if self.ppoly_model is not None:
+            ppoly_params_packed = torch.from_numpy(
+                self.ppoly_model.get_packed_parameters(
+                    output_bits=10,  # TODO: make configurable
+                    mul_bw=self.conf.polyapprox_coeffs_mul_bitwidth,
+                    add_bw=self.conf.polyapprox_coeffs_add_bitwidth
+                )
+            ).to(torch.int32)
+            torch.save(ppoly_params_packed, os.path.join(path, NnxTest._PPOLY_PARAMS_NAME))
+        elif self.ppoly_params is not None:
+            torch.save(self.ppoly_params, os.path.join(path, NnxTest._PPOLY_PARAMS_NAME))
 
     def save(self, path: Union[str, os.PathLike]) -> None:
         self.save_conf(path)
@@ -217,7 +242,7 @@ class NnxTest:
         return required_fileset.issubset(fileset)
 
     @classmethod
-    def load(cls, confCls: Type[NnxTestConf], path: Union[str, os.PathLike]) -> NnxTest:
+    def load(cls: Type[NnxTest], confCls: Type[NnxTestConf], path: Union[str, os.PathLike]) -> NnxTest:
         assert NnxTest.is_test_dir(
             path
         ), f"ERROR: Test {path} does not contain the necessary files."
@@ -238,9 +263,11 @@ class NnxTest:
         scale2 = load_if_exist(NnxTest._SCALE2_NAME)
         bias2 = load_if_exist(NnxTest._BIAS2_NAME)
         global_shift2 = load_if_exist(NnxTest._GLOBAL_SHIFT2_NAME)
+        ppoly_params = load_if_exist(NnxTest._PPOLY_PARAMS_NAME)
+        
         return cls(
             conf, input, output, weight, scale, bias, global_shift,
-            scale2, bias2, global_shift2
+            scale2, bias2, global_shift2, ppoly_params
         )
 
 
@@ -278,6 +305,18 @@ class NnxTestGenerator:
         return torch.floor(torch.clip(torch.normal(mean, std, size=shape), _type.min, _type.max)).type(torch.int64)
 
     @staticmethod
+    def _get_activation_function(func_name: str) -> Callable: # TODO: Add I-BERT/make more flexible for other models
+        """Get activation function by name."""
+        functions = {
+            "gelu": lambda x: 0.5 * x * (1 + np.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * x**3))),
+            "sigmoid": lambda x: 1 / (1 + np.exp(-x)),
+            "tanh": lambda x: np.tanh(x),
+            "relu": lambda x: np.maximum(0, x),
+            "swish": lambda x: x * (1 / (1 + np.exp(-x))),
+        }
+        return functions.get(func_name, functions["gelu"])
+
+    @staticmethod
     def from_conf(
         conf: NnxTestConf,
         input: Optional[torch.Tensor] = None,
@@ -288,10 +327,14 @@ class NnxTestGenerator:
         scale2: Optional[torch.Tensor] = None,
         bias2: Optional[torch.Tensor] = None,
         global_shift2: Optional[torch.Tensor] = None,
+        ppoly_params: Optional[torch.Tensor] = None, 
         verbose: bool = False,
     ) -> NnxTest:
         """Generate (or regenerate) a test‑vector bundle from a configuration."""
         torch.manual_seed(NnxTestGenerator._DEFAULT_SEED)
+
+        # Initialize ppoly_model to None
+        ppoly_model = None
 
         # ------------------------------------------------------------------
         # Shape bookkeeping
@@ -320,7 +363,7 @@ class NnxTestGenerator:
             if conf.synthetic_inputs:
                 input = torch.zeros(input_shape, dtype=torch.int64)
                 for i in range(conf.in_channel):
-                    inputs[:, i,0,0] = i
+                    input[:, i,0,0] = i
             else:
                 input = NnxTestGenerator._random_data(
                     _type=conf.in_type,
@@ -387,6 +430,33 @@ class NnxTestGenerator:
             
             # For GEMM with polynomial approximation, handle second norm-quant parameters
             if conf.is_gemm and conf.polyapprox_degree > 0:
+                 # Get the activation function to approximate
+                activation_func = NnxTestGenerator._get_activation_function(conf.polyapprox_func)
+                
+                # Create piecewise approximation model - keep it unpacked
+                ppoly_model = PiecewisePolyApproxModel(
+                    target_func=activation_func,
+                    num_segments=conf.polyapprox_segments,
+                    input_range=(-4.0, 4.0),  # TODO set from higher up
+                    input_quantization=32
+                )
+                
+                # Get quantized parameters and store them in the model for direct use
+                boundaries_q, slopes_q, intercepts_q = ppoly_model.get_quantized_lut(
+                    output_bits=10,  # TODO: make configurable
+                    slope_bits=conf.polyapprox_coeffs_mul_bitwidth,
+                    intercept_bits=conf.polyapprox_coeffs_add_bitwidth
+                )
+
+                # Store quantized parameters in the model for direct access
+                ppoly_model.boundaries_q = boundaries_q
+                ppoly_model.slopes_q = slopes_q
+                ppoly_model.intercepts_q = intercepts_q
+                
+                if verbose:
+                    print(f"Generated piecewise polynomial approximation for {conf.polyapprox_func}")
+                    print(f"  Segments: {conf.polyapprox_segments}")
+                    
                 # Generate scale2 if not provided
                 if scale2 is None and conf.scale_type is not None:
                     scale_extremes = (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_32BIT)-1) if conf.scale_type._bits == 32 else \
@@ -415,6 +485,7 @@ class NnxTestGenerator:
                         "global_shift2": global_shift2,
                         "norm1_out_type": IntegerType(name="int8"),
                         "norm2_out_type": NeuralEngineFunctionalModel.ACCUMULATOR_TYPE,
+                        "ppoly_model": ppoly_model,  # Pass the model directly
                     }
                     output = NeuralEngineFunctionalModel().gemm(
                         input, weight, scale, bias, global_shift, verbose=False, **conv_kwargs
@@ -423,9 +494,7 @@ class NnxTestGenerator:
                         output, conf.out_type
                     )
 
-        # ------------------------------------------------------------------
         # Generate final output with all parameters
-        # ------------------------------------------------------------------        
         if conf.is_gemm:
             conv_kwargs = {
                 **conf.__dict__,
@@ -435,6 +504,8 @@ class NnxTestGenerator:
                 "norm1_out_type": IntegerType(name="int8"),
                 "norm2_out_type": IntegerType(name="int8"),
             }
+            if ppoly_model is not None:
+                conv_kwargs["ppoly_model"] = ppoly_model
             output = NeuralEngineFunctionalModel().gemm(
                 input, weight, scale, bias, global_shift, verbose=verbose, **conv_kwargs
             )
@@ -454,6 +525,8 @@ class NnxTestGenerator:
             scale2=scale2,
             bias2=bias2,
             global_shift2=global_shift2,
+            ppoly_params=ppoly_params,
+            ppoly_model=ppoly_model,  # Store the model
             synthetic_inputs=conf.synthetic_inputs,
             synthetic_weights=conf.synthetic_weights,
         )
@@ -615,6 +688,31 @@ class NnxTestHeaderGenerator:
         global_shift2 = 0 if test.global_shift2 is None else int(test.global_shift2.item())
 
         # ------------------------------------------------------------------
+        # Render piecewise polynomial approximation parameters
+        # ------------------------------------------------------------------
+        if test.ppoly_model is not None:
+            # Pack parameters only when generating headers
+            ppoly_data = test.ppoly_model.get_packed_parameters(
+                output_bits=10,
+                mul_bw=test.conf.polyapprox_coeffs_mul_bitwidth,
+                add_bw=test.conf.polyapprox_coeffs_add_bitwidth
+            )
+            self.header_writer.generate_vector_files(
+                "ppolyapprox",
+                _type="uint32_t",
+                size=ppoly_data.size,
+                init=ppoly_data
+            )
+        elif test.ppoly_params is not None:
+            ppoly_data = test.ppoly_params.numpy()
+            self.header_writer.generate_vector_files(
+                "ppolyapprox",
+                _type="uint32_t",
+                size=ppoly_data.size,
+                init=ppoly_data
+            )
+
+        # ------------------------------------------------------------------
         # Layer configuration header
         # ------------------------------------------------------------------
         self.header_writer.generate_defines_header(
@@ -678,5 +776,16 @@ class NnxTestHeaderGenerator:
                 "has_relu": test.conf.has_relu,
                 "is_gemm": test.conf.is_gemm,
                 "polyapprox_degree": test.conf.polyapprox_degree,
+                "polyapprox": {
+                    "nr_parts": test.conf.polyapprox_segments,
+                    "bounds_bitwidth": test.conf.polyapprox_bounds_bitwidth,
+                    "coeffs_mul_bitwidth": test.conf.polyapprox_coeffs_mul_bitwidth,
+                    "coeffs_add_bitwidth": test.conf.polyapprox_coeffs_add_bitwidth,
+                    "params_size": (
+                        len(test.ppoly_model.get_packed_parameters(10, test.conf.polyapprox_coeffs_mul_bitwidth, test.conf.polyapprox_coeffs_add_bitwidth)) 
+                        if test.ppoly_model is not None 
+                        else (test.ppoly_params.numel() if test.ppoly_params is not None else 0)
+                    ),
+                }
             },
         )
