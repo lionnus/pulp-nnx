@@ -24,53 +24,64 @@
 #include "neureka_task_defs.h"
 #include <stdint.h>
 
-typedef enum neureka_task_flag_e {
+typedef enum neureka_task_flag_e
+{
   neurekaTaskFlagFalse = 0,
   neurekaTaskFlagTrue = 1
 } neureka_task_flag_e;
 
-typedef enum neureka_weight_source_e {
+typedef enum neureka_weight_source_e
+{
   neurekaWeightSourceTcdm = NEUREKA_FLAG_WEIGHT_SOURCE_TCDM,
   neurekaWeightSourceWmem = NEUREKA_FLAG_WEIGHT_SOURCE_WMEM
 } neureka_weight_source_e;
 
-typedef enum neureka_weight_offset_mode_e {
+typedef enum neureka_weight_offset_mode_e
+{
   weightOffsetModeSymmetric = NEUREKA_FLAG_WEIGHT_OFFSET_SYMMETRIC,
   weightOffsetModeLayerWise = NEUREKA_FLAG_WEIGHT_OFFSET_LAYER_WISE
 } neureka_weight_offset_mode_e;
 
-typedef enum neureka_activation_prefetch_e {
-  activationPrefetchOn  = NEUREKA_FLAG_ACTIVATION_PREFETCH_ON,
+typedef enum neureka_activation_prefetch_e
+{
+  activationPrefetchOn = NEUREKA_FLAG_ACTIVATION_PREFETCH_ON,
   activationPrefetchOff = NEUREKA_FLAG_ACTIVATION_PREFETCH_OFF
 } neureka_activation_prefetch_e;
 
-typedef enum neureka_polyapprox_degree_e {
-  polyApproxDegree1 = NEUREKA_POLYAPPROX_DEGREE_1,
-  polyApproxDegree2 = NEUREKA_POLYAPPROX_DEGREE_2
+typedef enum neureka_polyapprox_degree_e
+{
+  polyApproxDegree0 = 0, // No polynomial
+  polyApproxDegree1 = 1, // 1st degree polynomial
+  polyApproxDegree2 = 2  // 2nd degree polynomial
 } neureka_polyapprox_degree_e;
 
-typedef enum {
+typedef enum
+{
   normMode8Bit = NEUREKA_NORM_MODE_8BIT,
   normMode32Bit = NEUREKA_NORM_MODE_32BIT
 } neureka_norm_mode_e;
 
-typedef struct neureka_norm_t {
+typedef struct neureka_norm_t
+{
   neureka_norm_mode_e mode;
   neureka_task_flag_e flag_bias;
   neureka_task_flag_e flag_shift;
 } neureka_norm_t;
 
-typedef enum neureka_quant_mode_e {
+typedef enum neureka_quant_mode_e
+{
   quantMode8Bit = NEUREKA_QUANT_MODE_8BIT,
   quantMode32Bit = NEUREKA_QUANT_MODE_32BIT
 } neureka_quant_mode_e;
 
-typedef enum neureka_quant_function_e {
+typedef enum neureka_quant_function_e
+{
   quantFunctionIdentity = NEUREKA_FLAG_QUANT_FUNCTION_IDENTITY,
   quantFunctionRelu = NEUREKA_FLAG_QUANT_FUNCTION_RELU
 } neureka_quant_function_e;
 
-typedef struct neureka_quant_t {
+typedef struct neureka_quant_t
+{
   // Shift amount must be in range 0x00-0x1F
   uint8_t shift_amount;
   uint8_t shift_amount2; // Only used for polyapprox
@@ -78,29 +89,34 @@ typedef struct neureka_quant_t {
   neureka_task_flag_e flag_rounding;
 } neureka_quant_t;
 
-typedef struct neureka_stride_t {
+typedef struct neureka_stride_t
+{
   uint32_t d0;
   uint32_t d1;
   uint32_t d2;
 } neureka_stride_t;
 
-typedef struct neureka_subtile_remainder_t {
+typedef struct neureka_subtile_remainder_t
+{
   uint32_t KoKi;
   uint32_t HoWo;
   uint32_t HiWi;
 } neureka_subtile_remainder_t;
 
-typedef struct neureka_subtile_number_t {
+typedef struct neureka_subtile_number_t
+{
   uint32_t KoKi;
   uint32_t HoWo;
 } neureka_subtile_number_t;
 
-typedef struct neureka_subtile_t {
+typedef struct neureka_subtile_t
+{
   neureka_subtile_remainder_t remainder;
   neureka_subtile_number_t number;
 } neureka_subtile_t;
 
-typedef struct neureka_cfg_t {
+typedef struct neureka_cfg_t
+{
   neureka_stride_t input_stride;
   neureka_stride_t output_stride;
   neureka_stride_t weights_stride;
@@ -112,7 +128,8 @@ typedef struct neureka_cfg_t {
   uint32_t conf1;
 } neureka_cfg_t;
 
-typedef struct neureka_task_data_t {
+typedef struct neureka_task_data_t
+{
   uint32_t weights_ptr;
   uint32_t infeat_ptr;
   uint32_t outfeat_ptr;
@@ -124,9 +141,11 @@ typedef struct neureka_task_data_t {
   uint32_t scale2_ptr;
   uint32_t scale_shift2_ptr;
   uint32_t scale_bias2_ptr;
+  uint32_t ppolyapprox_ptr;
 } neureka_task_data_t;
 
-typedef struct neureka_task_t {
+typedef struct neureka_task_t
+{
   neureka_task_data_t data;
   uint8_t qw;
   uint8_t subtile_output_channel;
@@ -152,6 +171,11 @@ void neureka_task_set_input_signed(neureka_task_t *task);
 void neureka_task_set_input_unsigned(neureka_task_t *task);
 void neureka_task_set_weight_source(neureka_task_t *task,
                                     neureka_weight_source_e weight_source);
+void neureka_task_set_activation_prefetch(neureka_task_t *task,
+                                          neureka_activation_prefetch_e activation_prefetch);
+void neureka_task_set_ppolyapprox(neureka_task_t *task, uint32_t ppolyapprox_ptr,
+                                  uint8_t nr_active_parts, uint8_t mul_bitwidth,
+                                  uint8_t add_bitwidth, uint8_t degree);
 uint32_t neureka_get_tile_padding(uint32_t padding, uint32_t i_height,
                                   uint32_t i_width, uint32_t n_height,
                                   uint32_t n_width);
@@ -164,6 +188,8 @@ void neureka_task_set_ptrs_conv(neureka_task_t *task, uint32_t input_ptr,
                                 uint32_t output_ptr, uint32_t weights_ptr);
 void neureka_task_set_ptrs_norm_quant(neureka_task_t *task, uint32_t scale_ptr,
                                       uint32_t shift_ptr, uint32_t bias_ptr);
+void neureka_task_set_ptrs_norm_quant2(neureka_task_t *task, uint32_t scale_ptr,
+                                       uint32_t shift_ptr, uint32_t bias_ptr);
 /** neureka_task_set_strides
  *
  * All the strides variables are strides between elements alongside that
