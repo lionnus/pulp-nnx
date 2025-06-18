@@ -210,11 +210,11 @@ class PiecewisePolyApproxModel:
         
         for i in range(len(slopes)):
             if i == 0:
-                mask = x_int <= boundaries[i + 1]
+                mask = x_int < boundaries[i + 1]
             elif i == len(slopes) - 1:
-                mask = x_int > boundaries[i]
+                mask = x_int >= boundaries[i]
             else:
-                mask = (x_int > boundaries[i]) & (x_int <= boundaries[i + 1])
+                mask = (x_int >= boundaries[i]) & (x_int < boundaries[i + 1])
             
             y[mask] = slopes[i] * x_int[mask] + intercepts[i]
         
