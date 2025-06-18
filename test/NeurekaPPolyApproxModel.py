@@ -49,7 +49,7 @@ class PiecewisePolyApproxModel:
                              mul_bw: int = 8,
                              add_bw: int = 32,
                              boundary_bits: int = 8,
-                             boundary_total_bits: int = 256) -> np.ndarray:
+                             max_nr_parts: int = 16) -> np.ndarray:
         """
         Get parameters packed in the format expected by neural engine.
         
@@ -76,6 +76,7 @@ class PiecewisePolyApproxModel:
         
         # Pack slopes and intercepts together
         total_coeff_bits = self.num_segments * (mul_bw + add_bw)
+        boundary_total_bits = (max_nr_parts + 1) * boundary_bits if boundary_bits else 0
         total_bits = boundary_total_bits + total_coeff_bits
         
         # Calculate number of uint32s needed
