@@ -89,66 +89,6 @@ class NeuralEngineFunctionalModel:
         tensor = NeuralEngineFunctionalModel._cast(tensor, out_type, saturate=True)
 
         return tensor
-    
-    def _apply_piecewise_poly_approx(
-        self, 
-        tensor: torch.Tensor,
-        ppoly_model: PiecewisePolyApproxModel,
-        verbose: bool = False
-    ) -> torch.Tensor:
-        """
-        Apply piecewise polynomial approximation using the model directly.
-        
-        Args:
-            tensor: Input tensor (int32)
-            ppoly_model: PiecewisePolyApproxModel
-            verbose: Print intermediate results
-        
-        Returns:
-            Approximated tensor (int32)
-        """
-        # Check if quantized parameters are available, otherwise use float parameters
-        if hasattr(ppoly_model, 'boundaries_q') and hasattr(ppoly_model, 'slopes_q') and hasattr(ppoly_model, 'intercepts_q'):
-            # Use quantized parameters for integer arithmetic
-            boundaries = ppoly_model.boundaries_q
-            slopes = ppoly_model.slopes_q
-            intercepts = ppoly_model.intercepts_q
-        else:
-            # Fallback: convert float parameters to integers on-the-fly
-            boundaries = (ppoly_model.boundaries * ppoly_model.input_quantization).round().astype(int)
-            slopes = (ppoly_model.slopes * 1024).round().astype(int)  # Use a reasonable scale
-            intercepts = (ppoly_model.intercepts * 1024).round().astype(int)  # Use a reasonable scale
-        
-        if verbose:
-            print("PIECEWISE POLY APPROX PARAMETERS:")
-            print(f"  Boundaries: {boundaries}")
-            print(f"  Slopes: {slopes}")
-            print(f"  Intercepts: {intercepts}")
-        
-        # Apply piecewise linear approximation with integer arithmetic
-        output = torch.zeros_like(tensor, dtype=torch.int32)
-        tensor_np = tensor.numpy()
-        
-        for i in range(len(slopes)):
-            if i == 0:
-                mask = tensor_np <= boundaries[i + 1]
-            elif i == len(slopes) - 1:
-                mask = tensor_np > boundaries[i]
-            else:
-                mask = (tensor_np > boundaries[i]) & (tensor_np <= boundaries[i + 1])
-            
-            # Apply linear transformation: y = slope * x + intercept (all integers)
-            output[mask] = int(slopes[i]) * tensor[mask] + int(intercepts[i])
-        
-        if verbose:
-            print("INTERMEDIATE RESULTS (after piecewise poly approx):")
-            current_threshold = np.get_printoptions()["threshold"]
-            np.set_printoptions(threshold=np.inf)
-            print(NeuralEngineFunctionalModel._tensor_to_hex(output))
-            np.set_printoptions(threshold=current_threshold)
-        
-        return output
-
 
     def convolution(
         self,
@@ -228,7 +168,6 @@ class NeuralEngineFunctionalModel:
             )
 
         return output
-
     def gemm(
         self,
         b_matrix: torch.Tensor, # activations
@@ -248,8 +187,8 @@ class NeuralEngineFunctionalModel:
         is_gemm: bool = True,
         polyapprox_degree: int = 0,
         polyapprox_segments: int = 16,
-        ppoly_params: Optional[torch.Tensor] = None,  # Keep for backward compatibility
-        ppoly_model: Optional[PiecewisePolyApproxModel] = None,  # Preferred way
+        ppoly_params: Optional[torch.Tensor] = None, 
+        ppoly_model: Optional[PiecewisePolyApproxModel] = None, 
         verbose: bool = False,
         skip_polyapprox_degree: bool = False,
         **kwargs,
@@ -257,11 +196,11 @@ class NeuralEngineFunctionalModel:
         _ = kwargs
         """
         Performs A @ B, then optionally applies per-channel quantization:
-         - scale (int64 accum -> int64 scaled)
-         - bias (int32), should not be used for GEMM
-         - ReLU, should not be used for GEMM
-         - global_shift (right-shift)
-         - saturation to out_type
+        - scale (int64 accum -> int64 scaled)
+        - bias (int32), should not be used for GEMM
+        - ReLU, should not be used for GEMM
+        - global_shift (right-shift)
+        - saturation to out_type
 
         Args mirror convolution's quant options but for GEMM.
         """
@@ -317,30 +256,18 @@ class NeuralEngineFunctionalModel:
             assert polyapprox_degree in [1, 2], "polyapprox_degree must be 1 (linear) or 2 (quadratic)"
             
             if ppoly_model is not None:
-                # Use the model directly - much cleaner!
-                output = self._apply_piecewise_poly_approx(
-                    output, 
-                    ppoly_model,
-                    verbose=verbose
-                )
-            elif ppoly_params is not None:
-                # Fallback to packed parameters for backward compatibility
-                # Get bitwidths from kwargs if available, otherwise use defaults
-                mul_bw = kwargs.get('polyapprox_coeffs_mul_bitwidth', 8)
-                add_bw = kwargs.get('polyapprox_coeffs_add_bitwidth', 16)
-                output = self._apply_piecewise_poly_approx_packed(
-                    output, 
-                    ppoly_params,
-                    polyapprox_segments,
-                    mul_bw=mul_bw,
-                    add_bw=add_bw,
-                    verbose=verbose
-                )
-            else:
-                raise ValueError("Either ppoly_model or ppoly_params must be provided for polynomial approximation.")
+                # Apply the piecewise polynomial approximation
+                output = ppoly_model.apply(output, verbose=verbose)
+                
+                if verbose:
+                    print("INTERMEDIATE RESULTS (after piecewise poly approx):")
+                    current_threshold = np.get_printoptions()["threshold"]
+                    np.set_printoptions(threshold=np.inf)
+                    print(NeuralEngineFunctionalModel._tensor_to_hex(output))
+                    np.set_printoptions(threshold=current_threshold)
         
             # Second normalization + requant after polynomial approximation
-            if has_norm_quant:
+            if has_norm_quant and polyapprox_degree > 0 and not skip_polyapprox_degree:
                 # Use separate scale/bias/shift parameters if provided for post-polyapprox
                 post_scale = scale2 if scale2 is not None else scale
                 post_bias = bias2 if bias2 is not None else bias
@@ -358,27 +285,4 @@ class NeuralEngineFunctionalModel:
                     verbose,
                 )
 
-        return output
-
-    def _apply_piecewise_poly_approx_packed(
-        self, 
-        tensor: torch.Tensor,
-        ppoly_params: torch.Tensor,
-        num_segments: int,
-        mul_bw: int = 8,
-        add_bw: int = 16,
-        verbose: bool = False
-    ) -> torch.Tensor:
-        """Backward compatibility method for packed parameters."""
-        output = PiecewisePolyApproxModel.apply_packed_approximation(
-            tensor, ppoly_params, num_segments, mul_bw, add_bw, verbose
-        )
-        
-        if verbose:
-            print("INTERMEDIATE RESULTS (after piecewise poly approx):")
-            current_threshold = np.get_printoptions()["threshold"]
-            np.set_printoptions(threshold=np.inf)
-            print(NeuralEngineFunctionalModel._tensor_to_hex(output))
-            np.set_printoptions(threshold=current_threshold)
-        
         return output

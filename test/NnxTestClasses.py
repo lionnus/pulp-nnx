@@ -63,8 +63,9 @@ class NnxTestConf(BaseModel):
     polyapprox_degree: int = 0  # Poly approximation, 0 for none, 1 for linear, 2 for quadratic
     polyapprox_segments: int = 16  # Number of segments for piecewise approximation
     polyapprox_bounds_bitwidth: int = 8 # Number of bits for each bound value
-    polyapprox_coeffs_mul_bitwidth: int = 8 # Number of bits for each multiplication coefficient value
+    polyapprox_coeffs_mul_bitwidth: int = 16 # Number of bits for each multiplication coefficient value
     polyapprox_coeffs_add_bitwidth: int = 32 # Number of bits for each addition coefficient value
+    polyapprox_output_scaling_bits: int = 13  # Number of bits for output scaling
 
     polyapprox_func: str = "gelu"  # Function to approximate: check NeurekaPPolyApproxModel for available functions
 
@@ -127,7 +128,6 @@ class NnxTestConf(BaseModel):
         )
         return self
 
-
 class NnxTest:
     _CONF_NAME = "conf.json"
     _INPUT_NAME = "input.pt"
@@ -172,8 +172,8 @@ class NnxTest:
         self.global_shift2 = global_shift2
         self.is_gemm = is_gemm
         self.polyapprox_degree = polyapprox_degree
-        self.ppoly_params = ppoly_params
-        self.ppoly_model = ppoly_model
+        self.ppoly_params = ppoly_params  # Store packed parameters as tensor
+        self.ppoly_model = ppoly_model  # Keep model for reference/debugging
         self.synthetic_weights = synthetic_weights
         self.synthetic_inputs = synthetic_inputs
 
@@ -217,20 +217,10 @@ class NnxTest:
             torch.save(
                 self.global_shift2, os.path.join(path, NnxTest._GLOBAL_SHIFT2_NAME)
             )
-        
-        # Pack parameters only when saving
-        if self.ppoly_model is not None:
-            ppoly_params_packed = torch.from_numpy(
-                self.ppoly_model.get_packed_parameters(
-                    output_bits=10,  # TODO: make configurable
-                    mul_bw=self.conf.polyapprox_coeffs_mul_bitwidth,
-                    add_bw=self.conf.polyapprox_coeffs_add_bitwidth
-                )
-            ).to(torch.int32)
-            torch.save(ppoly_params_packed, os.path.join(path, NnxTest._PPOLY_PARAMS_NAME))
-        elif self.ppoly_params is not None:
+        # Save ppoly_params directly - it's already packed
+        if self.ppoly_params is not None:
             torch.save(self.ppoly_params, os.path.join(path, NnxTest._PPOLY_PARAMS_NAME))
-
+            
     def save(self, path: Union[str, os.PathLike]) -> None:
         self.save_conf(path)
         self.save_data(path)
@@ -267,7 +257,8 @@ class NnxTest:
         
         return cls(
             conf, input, output, weight, scale, bias, global_shift,
-            scale2, bias2, global_shift2, ppoly_params
+            scale2, bias2, global_shift2, conf.is_gemm, conf.polyapprox_degree,
+            ppoly_params, None  # ppoly_model=None when loading
         )
 
 
@@ -342,7 +333,7 @@ class NnxTestGenerator:
         if conf.is_gemm:
             input_shape = (conf.in_channel, conf.in_height*conf.in_width)
             weight_shape = (conf.out_channel, conf.in_channel)
-            scale_shape = (conf.out_channel,1) # TODO: How many diff scales?
+            scale_shape = (conf.out_channel,1)
             bias_shape = (conf.out_channel,1)
         else:
             #Convolution mode
@@ -396,8 +387,8 @@ class NnxTestGenerator:
                 assert conf.scale_type is not None
                 # same limits as in old NE16 generator
                 scale_extremes = (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_32BIT)-1) if conf.scale_type._bits == 32 else \
-                                 (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_16BIT)-1) if conf.scale_type._bits == 16 else \
-                                 (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_8BIT)-1)  if conf.scale_type._bits == 8  else (1, (1<<18)-1)
+                                (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_16BIT)-1) if conf.scale_type._bits == 16 else \
+                                (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_8BIT)-1)  if conf.scale_type._bits == 8  else (1, (1<<18)-1)
                 scale = NnxTestGenerator._random_data(
                     conf.scale_type, shape=scale_shape, extremes=scale_extremes
                 )
@@ -429,43 +420,46 @@ class NnxTestGenerator:
                 )
             
             # For GEMM with polynomial approximation, handle second norm-quant parameters
-            if conf.is_gemm and conf.polyapprox_degree > 0:
-                 # Get the activation function to approximate
+            if conf.is_gemm and conf.polyapprox_degree > 0 and ppoly_params is None:
+                # Get the activation function to approximate
                 activation_func = NnxTestGenerator._get_activation_function(conf.polyapprox_func)
                 
-                # Create piecewise approximation model - keep it unpacked
+                # Create piecewise approximation model with bitwidth parameters
                 ppoly_model = PiecewisePolyApproxModel(
                     target_func=activation_func,
                     num_segments=conf.polyapprox_segments,
-                    input_range=(-4.0, 4.0),  # TODO set from higher up
-                    input_quantization=32
+                    input_range=(-4.0, 4.0),  # TODO: make configurable
+                    input_quantization=32,
+                    slope_bits=conf.polyapprox_coeffs_mul_bitwidth,
+                    intercept_bits=conf.polyapprox_coeffs_add_bitwidth,
+                    output_bits=conf.polyapprox_output_scaling_bits
                 )
                 
-                # Get quantized parameters and store them in the model for direct use
-                boundaries_q, slopes_q, intercepts_q = ppoly_model.get_quantized_lut(
-                    output_bits=10,  # TODO: make configurable
-                    slope_bits=conf.polyapprox_coeffs_mul_bitwidth,
-                    intercept_bits=conf.polyapprox_coeffs_add_bitwidth
-                )
-
-                # Store quantized parameters in the model for direct access
-                ppoly_model.boundaries_q = boundaries_q
-                ppoly_model.slopes_q = slopes_q
-                ppoly_model.intercepts_q = intercepts_q
+                # Generate packed parameters immediately
+                ppoly_params = torch.from_numpy(
+                    ppoly_model.get_packed_parameters(
+                        output_bits=24,  # TODO: make configurable
+                        mul_bw=conf.polyapprox_coeffs_mul_bitwidth,
+                        add_bw=conf.polyapprox_coeffs_add_bitwidth
+                    )
+                ).to(torch.int32)
                 
                 if verbose:
                     print(f"Generated piecewise polynomial approximation for {conf.polyapprox_func}")
                     print(f"  Segments: {conf.polyapprox_segments}")
+                    print(f"  Slope bits: {conf.polyapprox_coeffs_mul_bitwidth}")
+                    print(f"  Intercept bits: {conf.polyapprox_coeffs_add_bitwidth}")
+                    ppoly_model.print_lut()
                     
                 # Generate scale2 if not provided
                 if scale2 is None and conf.scale_type is not None:
                     scale_extremes = (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_32BIT)-1) if conf.scale_type._bits == 32 else \
-                                     (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_16BIT)-1) if conf.scale_type._bits == 16 else \
-                                     (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_8BIT)-1)  if conf.scale_type._bits == 8  else (1, (1<<18)-1)
+                                    (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_16BIT)-1) if conf.scale_type._bits == 16 else \
+                                    (1, (1<<NnxTestGenerator._DEFAULT_SCALE_MAX_BIT_8BIT)-1)  if conf.scale_type._bits == 8  else (1, (1<<18)-1)
                     scale2 = NnxTestGenerator._random_data(
                         conf.scale_type, shape=scale_shape, extremes=scale_extremes
                     )
-                
+
                 # Generate bias2 if not provided and has_bias is True
                 if conf.has_bias and bias2 is None and conf.bias_type is not None:
                     bias_extremes = (-(1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT), (1<<NnxTestGenerator._DEFAULT_BIAS_MAX_BIT)-1)
@@ -525,8 +519,10 @@ class NnxTestGenerator:
             scale2=scale2,
             bias2=bias2,
             global_shift2=global_shift2,
+            is_gemm=conf.is_gemm,
+            polyapprox_degree=conf.polyapprox_degree,
             ppoly_params=ppoly_params,
-            ppoly_model=ppoly_model,  # Store the model
+            ppoly_model=ppoly_model,
             synthetic_inputs=conf.synthetic_inputs,
             synthetic_weights=conf.synthetic_weights,
         )
@@ -690,20 +686,7 @@ class NnxTestHeaderGenerator:
         # ------------------------------------------------------------------
         # Render piecewise polynomial approximation parameters
         # ------------------------------------------------------------------
-        if test.ppoly_model is not None:
-            # Pack parameters only when generating headers
-            ppoly_data = test.ppoly_model.get_packed_parameters(
-                output_bits=10,
-                mul_bw=test.conf.polyapprox_coeffs_mul_bitwidth,
-                add_bw=test.conf.polyapprox_coeffs_add_bitwidth
-            )
-            self.header_writer.generate_vector_files(
-                "ppolyapprox",
-                _type="uint32_t",
-                size=ppoly_data.size,
-                init=ppoly_data
-            )
-        elif test.ppoly_params is not None:
+        if test.ppoly_params is not None:
             ppoly_data = test.ppoly_params.numpy()
             self.header_writer.generate_vector_files(
                 "ppolyapprox",
@@ -780,12 +763,7 @@ class NnxTestHeaderGenerator:
                     "nr_parts": test.conf.polyapprox_segments,
                     "bounds_bitwidth": test.conf.polyapprox_bounds_bitwidth,
                     "coeffs_mul_bitwidth": test.conf.polyapprox_coeffs_mul_bitwidth,
-                    "coeffs_add_bitwidth": test.conf.polyapprox_coeffs_add_bitwidth,
-                    "params_size": (
-                        len(test.ppoly_model.get_packed_parameters(10, test.conf.polyapprox_coeffs_mul_bitwidth, test.conf.polyapprox_coeffs_add_bitwidth)) 
-                        if test.ppoly_model is not None 
-                        else (test.ppoly_params.numel() if test.ppoly_params is not None else 0)
-                    ),
+                    "coeffs_add_bitwidth": test.conf.polyapprox_coeffs_add_bitwidth
                 }
             },
         )
