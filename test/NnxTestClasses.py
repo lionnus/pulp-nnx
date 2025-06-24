@@ -429,7 +429,7 @@ class NnxTestGenerator:
                     target_func=activation_func,
                     num_segments=conf.polyapprox_segments,
                     input_range=(-4.0, 4.0),  # TODO: make configurable
-                    input_quantization=32,
+                    input_quantization=28,
                     slope_bits=conf.polyapprox_coeffs_mul_bitwidth,
                     intercept_bits=conf.polyapprox_coeffs_add_bitwidth,
                     output_bits=conf.polyapprox_output_scaling_bits
@@ -759,7 +759,7 @@ class NnxTestHeaderGenerator:
                 "has_relu": test.conf.has_relu,
                 "is_gemm": test.conf.is_gemm,
                 "polyapprox_degree": test.conf.polyapprox_degree,
-                "polyapprox": {
+                "ppolyapprox": {
                     "nr_parts": test.conf.polyapprox_segments,
                     "bounds_bitwidth": test.conf.polyapprox_bounds_bitwidth,
                     "coeffs_mul_bitwidth": test.conf.polyapprox_coeffs_mul_bitwidth,
