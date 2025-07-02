@@ -13,7 +13,8 @@ class PiecewisePolyApproxModel:
                  input_quantization: int = 32,
                  slope_bits: int = 8,
                  intercept_bits: int = 32,
-                 output_bits: int = 24):
+                 output_bits: int = 24,
+                 max_nr_parts: int = 8) -> None:
         """
         Initialize piecewise polynomial approximation model.
         
@@ -33,6 +34,7 @@ class PiecewisePolyApproxModel:
         self.slope_bits = slope_bits
         self.intercept_bits = intercept_bits
         self.output_bits = output_bits
+        self.max_nr_parts = max_nr_parts
         
         # Fit the piecewise linear approximation
         self.boundaries, self.slopes, self.intercepts = self._fit_piecewise_linear()
@@ -95,8 +97,7 @@ class PiecewisePolyApproxModel:
                              output_bits: Optional[int] = None,
                              mul_bw: Optional[int] = None,
                              add_bw: Optional[int] = None,
-                             boundary_bits: int = 8,
-                             max_nr_parts: int = 16) -> np.ndarray:
+                             boundary_bits: int = 8) -> np.ndarray:
         """
         Get parameters packed in the format expected by neural engine.
         
@@ -106,6 +107,8 @@ class PiecewisePolyApproxModel:
         Returns:
             Packed parameters as uint32 array
         """
+        # Get max number of parts, fixed in HW
+        max_nr_parts = self.max_nr_parts
         # Use instance defaults if not provided
         output_bits = self.output_bits
         mul_bw = self.slope_bits
