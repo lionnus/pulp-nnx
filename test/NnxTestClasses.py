@@ -63,9 +63,11 @@ class NnxTestConf(BaseModel):
     polyapprox_degree: int = 0  # Poly approximation, 0 for none, 1 for linear, 2 for quadratic
     polyapprox_segments: int = 16  # Number of segments for piecewise approximation
     polyapprox_bounds_bitwidth: int = 8 # Number of bits for each bound value
-    polyapprox_coeffs_mul_bitwidth: int = 16 # Number of bits for each multiplication coefficient value
-    polyapprox_coeffs_add_bitwidth: int = 32 # Number of bits for each addition coefficient value
-    polyapprox_output_scaling_bits: int = 13  # Number of bits for output scaling
+    polyapprox_c2_bits: int = 16  # Number of bits for quadratic coefficients (c2)
+    polyapprox_c1_bits: int = 24  # Number of bits for linear coefficients (c1) 
+    polyapprox_c0_bits: int = 24  # Number of bits for constant coefficients (c0)
+    polyapprox_output_scaling_bits: int = 20  # Number of bits for output scaling
+    polyapprox_max_nr_parts: int = 16  # Maximum number of parts supported by hardware
 
     polyapprox_func: str = "gelu"  # Function to approximate: check NeurekaPPolyApproxModel for available functions
 
@@ -405,6 +407,7 @@ class NnxTestGenerator:
                 global_shift = torch.Tensor([0]).type(torch.int32)
                 conv_kwargs = {
                     **conf.__dict__,
+                    "out_type": NeuralEngineFunctionalModel.ACCUMULATOR_TYPE,  # Override to avoid saturation
                     "norm1_out_type": NeuralEngineFunctionalModel.ACCUMULATOR_TYPE,
                     "norm2_out_type": NeuralEngineFunctionalModel.ACCUMULATOR_TYPE, # doesnt matter since not used in this pass
                     "skip_polyapprox_degree": True, # Skip to calculate first norm quant shift
@@ -430,25 +433,31 @@ class NnxTestGenerator:
                     num_segments=conf.polyapprox_segments,
                     input_range=(-4.0, 4.0),  # TODO: make configurable
                     input_quantization=28,
-                    slope_bits=conf.polyapprox_coeffs_mul_bitwidth,
-                    intercept_bits=conf.polyapprox_coeffs_add_bitwidth,
-                    output_bits=conf.polyapprox_output_scaling_bits
+                    degree=conf.polyapprox_degree,
+                    c2_bits=conf.polyapprox_c2_bits,
+                    c1_bits=conf.polyapprox_c1_bits,
+                    c0_bits=conf.polyapprox_c0_bits,
+                    output_bits=conf.polyapprox_output_scaling_bits,
+                    max_nr_parts=conf.polyapprox_max_nr_parts
                 )
                 
                 # Generate packed parameters immediately
                 ppoly_params = torch.from_numpy(
                     ppoly_model.get_packed_parameters(
-                        output_bits=24,  # TODO: make configurable
-                        mul_bw=conf.polyapprox_coeffs_mul_bitwidth,
-                        add_bw=conf.polyapprox_coeffs_add_bitwidth
+                        output_bits=conf.polyapprox_output_scaling_bits,
+                        c2_bits=conf.polyapprox_c2_bits,
+                        c1_bits=conf.polyapprox_c1_bits,
+                        c0_bits=conf.polyapprox_c0_bits
                     )
                 ).to(torch.int32)
                 
                 if verbose:
                     print(f"Generated piecewise polynomial approximation for {conf.polyapprox_func}")
                     print(f"  Segments: {conf.polyapprox_segments}")
-                    print(f"  Slope bits: {conf.polyapprox_coeffs_mul_bitwidth}")
-                    print(f"  Intercept bits: {conf.polyapprox_coeffs_add_bitwidth}")
+                    print(f"  Degree: {conf.polyapprox_degree}")
+                    print(f"  c2 bits: {conf.polyapprox_c2_bits}")
+                    print(f"  c1 bits: {conf.polyapprox_c1_bits}")
+                    print(f"  c0 bits: {conf.polyapprox_c0_bits}")
                     ppoly_model.print_lut()
                     
                 # Generate scale2 if not provided
@@ -761,9 +770,11 @@ class NnxTestHeaderGenerator:
                 "polyapprox_degree": test.conf.polyapprox_degree,
                 "ppolyapprox": {
                     "nr_parts": test.conf.polyapprox_segments,
+                    "max_nr_parts": test.conf.polyapprox_max_nr_parts,
                     "bounds_bitwidth": test.conf.polyapprox_bounds_bitwidth,
-                    "coeffs_mul_bitwidth": test.conf.polyapprox_coeffs_mul_bitwidth,
-                    "coeffs_add_bitwidth": test.conf.polyapprox_coeffs_add_bitwidth
+                    "c2_bits": test.conf.polyapprox_c2_bits,
+                    "c1_bits": test.conf.polyapprox_c1_bits,
+                    "c0_bits": test.conf.polyapprox_c0_bits
                 }
             },
         )

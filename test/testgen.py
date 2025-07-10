@@ -65,20 +65,27 @@ def print_tensors(test: NnxTest):
     print(test.bias)
     print("GLOBAL SHIFT TENSOR:")
     print(test.global_shift)
-    # TODO Update for 2nd degree polynomial
+    # Print polynomial parameters if available
     if test.ppoly_model is not None:
-        slopes = np.array(test.ppoly_model.slopes_q).flatten()
-        intercepts = np.array(test.ppoly_model.intercepts_q).flatten()
-        boundaries = np.array(test.ppoly_model.boundaries_q).flatten()
+        coefficients = np.array(test.ppoly_model.coefficients_q)
+        boundaries = np.array(test.ppoly_model.boundaries_q)
+        degree = test.ppoly_model.degree
         
         print("PIECEWISE POLYNOMIAL PARAMETERS:")
-        print("=" * 85)
-        print(f"{'Piece':<6} {'Range':<20} {'Slope':<12} {'Intercept':<12}")
-        print("-" * 85)
+        print("=" * 100)
         
-        for i in range(len(slopes)):
-            range_str = f"[{int(boundaries[i])}, {int(boundaries[i+1])})"
-            print(f"{i:<6} {range_str:<20} {int(slopes[i]):<12} {int(intercepts[i]):<12}")
+        if degree == 1:
+            print(f"{'Piece':<6} {'Range':<20} {'c1':<12} {'c0':<12}")
+            print("-" * 100)
+            for i in range(len(coefficients)):
+                range_str = f"[{int(boundaries[i])}, {int(boundaries[i+1])})"
+                print(f"{i:<6} {range_str:<20} {int(coefficients[i, 1]):<12} {int(coefficients[i, 0]):<12}")
+        elif degree == 2:
+            print(f"{'Piece':<6} {'Range':<20} {'c2':<8} {'c1':<12} {'c0':<12}")
+            print("-" * 100)
+            for i in range(len(coefficients)):
+                range_str = f"[{int(boundaries[i])}, {int(boundaries[i+1])})"
+                print(f"{i:<6} {range_str:<20} {int(coefficients[i, 2]):<8} {int(coefficients[i, 1]):<12} {int(coefficients[i, 0]):<12}")
         
         print("SCALE2 TENSOR:")
         print(test.scale2)
