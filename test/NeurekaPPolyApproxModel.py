@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 from typing import Tuple, Callable, Optional
-import matplotlib.pyplot as plt
 
 class PiecewisePolyApproxModel:
     """
