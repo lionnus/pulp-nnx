@@ -90,6 +90,20 @@ class NeurekaTestConf(NnxTestConf):
         return self
 
     @model_validator(mode="after")  # type: ignore
+    def check_valid_gemm_kernel_shape(self) -> NeurekaTestConf:
+        assert implies(
+            self.is_gemm, self.kernel_shape == KernelShape(height=1, width=1)
+        ), f"GEMM mode supported only on 1x1 kernel shape. Given kernel shape {self.kernel_shape}."
+        return self
+
+    @model_validator(mode="after")  # type: ignore
+    def check_valid_polyapprox_with_gemm(self) -> NeurekaTestConf:
+        assert implies(
+            self.polyapprox_degree > 0, self.is_gemm
+        ), f"Polyapprox can only be set when GEMM mode is enabled."
+        return self
+
+    @model_validator(mode="after")  # type: ignore
     def check_valid_out_type_with_norm_quant(self) -> NeurekaTestConf:
         assert implies(
             not self.has_norm_quant,
