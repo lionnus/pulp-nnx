@@ -55,6 +55,20 @@ def headers_gen(
 
 def print_tensors(test: NnxTest):
     np.set_printoptions(threshold=sys.maxsize)
+    
+    def print_tensor_hex(name: str, tensor):
+        """Print tensor values in hexadecimal format"""
+        print(f"{name}:")
+        if tensor is not None:
+            flat = tensor.flatten().numpy() if hasattr(tensor, 'numpy') else tensor.flatten()
+            # Print in rows of 8 values
+            for i in range(0, len(flat), 8):
+                row = flat[i:i+8]
+                hex_str = ' '.join([f'{int(val):08x}' for val in row])
+                print(f"  {hex_str}")
+        else:
+            print("  None")
+    
     print("INPUT TENSOR:")
     print(test.input)
     print("WEIGHT TENSOR:")
@@ -93,6 +107,8 @@ def print_tensors(test: NnxTest):
         print(test.bias2)
         print("GLOBAL SHIFT2 TENSOR:")
         print(test.global_shift2)
+    if test.streamin is not None:
+        print_tensor_hex("STREAMIN TENSOR (HEX)", test.streamin)
     print("EXPECTED OUTPUT TENSOR:")
     print(test.output)
 

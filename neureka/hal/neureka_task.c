@@ -198,6 +198,11 @@ void neureka_task_set_ptrs_norm_quant2(neureka_task_t *task, uint32_t scale_ptr,
   task->data.scale_bias2_ptr = bias_ptr;
 }
 
+void neureka_task_set_ptrs_streamin(neureka_task_t *task, uint32_t streamin_ptr)
+{
+  task->data.streamin_ptr = streamin_ptr;
+}
+
 void neureka_task_set_strides(neureka_task_t *task, const uint32_t k_in,
                               const uint32_t h_in_stride,
                               const uint32_t w_in_stride,

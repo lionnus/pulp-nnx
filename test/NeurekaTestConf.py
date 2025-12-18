@@ -82,6 +82,13 @@ class NeurekaTestConf(NnxTestConf):
             NeurekaTestConf._check_type("bias_type", v, ["int32"])
         return v
 
+@field_validator("streamin_type")
+@classmethod
+def check_valid_streamin_type(cls, v: Optional[IntegerType]) -> Optional[IntegerType]:
+    if v is not None:
+        NeurekaTestConf._check_type("streamin_type", v, ["int8", "int32"])
+    return v
+
     @model_validator(mode="after")  # type: ignore
     def check_valid_depthwise_kernel_shape(self) -> NeurekaTestConf:
         assert implies(

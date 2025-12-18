@@ -190,6 +190,7 @@ void neureka_task_set_ptrs_norm_quant(neureka_task_t *task, uint32_t scale_ptr,
                                       uint32_t shift_ptr, uint32_t bias_ptr);
 void neureka_task_set_ptrs_norm_quant2(neureka_task_t *task, uint32_t scale_ptr,
                                        uint32_t shift_ptr, uint32_t bias_ptr);
+void neureka_task_set_ptrs_streamin(neureka_task_t *task, uint32_t streamin_ptr);
 /** neureka_task_set_strides
  *
  * All the strides variables are strides between elements alongside that

@@ -103,6 +103,8 @@
 #define NEUREKA_FLAG_WEIGHT_OFFSET_SYMMETRIC (0 << 15) // Unimplemented in gvsoc
 #define NEUREKA_FLAG_WEIGHT_OFFSET_LAYER_WISE \
   (1 << 15) // Unimplemented in gvsoc
+#define NEUREKA_STREAMIN_MODE_8B (0 << 15)
+#define NEUREKA_STREAMIN_MODE_32B (1 << 15)
 #define NEUREKA_FLAG_STREAMIN (1 << 14)
 #define NEUREKA_NORM_MODE_8BIT (0 << 12)
 #define NEUREKA_NORM_MODE_32BIT (2 << 12)

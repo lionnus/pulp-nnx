@@ -52,11 +52,13 @@ class NnxTestConf(BaseModel):
     weight_type: IntegerType
     scale_type: Optional[IntegerType] = None
     bias_type: Optional[IntegerType] = None
+    streamin_type: Optional[IntegerType] = None
 
     # Feature flags
     has_norm_quant: bool
     has_bias: bool
     has_relu: bool
+    has_streamin: bool = False
     
     # GEMM Operation mode flag
     is_gemm: bool = False
@@ -130,6 +132,20 @@ class NnxTestConf(BaseModel):
         )
         return self
 
+    @model_validator(mode="after")  # type: ignore
+    def check_has_streamin_with_norm_quant(self) -> NnxTestConf:
+        assert implies(self.has_streamin, self.has_norm_quant), (
+            f"Streamin flag can only be enabled when norm_quant is enabled. "
+            f"Given has_streamin {self.has_streamin} and has_norm_quant {self.has_norm_quant}"
+        )
+        return self
+
+    @model_validator(mode="after")  # type: ignore
+    def check_valid_streamin_type(self) -> NnxTestConf:
+        if self.has_streamin:
+            assert self.streamin_type is not None, "Streamin type was not provided."
+        return self
+
 class NnxTest:
     _CONF_NAME = "conf.json"
     _INPUT_NAME = "input.pt"
@@ -142,6 +158,7 @@ class NnxTest:
     _BIAS2_NAME = "bias2.pt"
     _GLOBAL_SHIFT2_NAME = "global_shift2.pt"
     _PPOLY_PARAMS_NAME = "ppolyapprox.pt"
+    _STREAMIN_NAME = "streamin.pt"
 
     def __init__(
         self,
@@ -161,6 +178,7 @@ class NnxTest:
         ppoly_model: Optional[PiecewisePolyApproxModel] = None,
         synthetic_weights: Optional[bool] = False,
         synthetic_inputs: Optional[bool] = False,
+        streamin: Optional[torch.Tensor] = None,
     ) -> None:
         self.conf = conf
         self.input = input
@@ -178,6 +196,7 @@ class NnxTest:
         self.ppoly_model = ppoly_model  # Keep model for reference/debugging
         self.synthetic_weights = synthetic_weights
         self.synthetic_inputs = synthetic_inputs
+        self.streamin = streamin
 
     def is_valid(self) -> bool:
         return all(
@@ -188,6 +207,7 @@ class NnxTest:
                 implies(self.conf.has_norm_quant, self.scale is not None),
                 implies(self.conf.has_bias, self.bias is not None),
                 implies(self.conf.has_norm_quant, self.global_shift is not None),
+                implies(self.conf.has_streamin, self.streamin is not None),
             ]
         )
 
@@ -222,6 +242,8 @@ class NnxTest:
         # Save ppoly_params directly - it's already packed
         if self.ppoly_params is not None:
             torch.save(self.ppoly_params, os.path.join(path, NnxTest._PPOLY_PARAMS_NAME))
+        if self.streamin is not None:
+            torch.save(self.streamin, os.path.join(path, NnxTest._STREAMIN_NAME))
             
     def save(self, path: Union[str, os.PathLike]) -> None:
         self.save_conf(path)
@@ -256,11 +278,12 @@ class NnxTest:
         bias2 = load_if_exist(NnxTest._BIAS2_NAME)
         global_shift2 = load_if_exist(NnxTest._GLOBAL_SHIFT2_NAME)
         ppoly_params = load_if_exist(NnxTest._PPOLY_PARAMS_NAME)
+        streamin = load_if_exist(NnxTest._STREAMIN_NAME)
         
         return cls(
             conf, input, output, weight, scale, bias, global_shift,
             scale2, bias2, global_shift2, conf.is_gemm, conf.polyapprox_degree,
-            ppoly_params, None  # ppoly_model=None when loading
+            ppoly_params, None, conf.synthetic_weights, conf.synthetic_inputs, streamin  # ppoly_model=None when loading
         )
 
 
@@ -320,7 +343,8 @@ class NnxTestGenerator:
         scale2: Optional[torch.Tensor] = None,
         bias2: Optional[torch.Tensor] = None,
         global_shift2: Optional[torch.Tensor] = None,
-        ppoly_params: Optional[torch.Tensor] = None, 
+        ppoly_params: Optional[torch.Tensor] = None,
+        streamin: Optional[torch.Tensor] = None,
         verbose: bool = False,
     ) -> NnxTest:
         """Generate (or regenerate) a test‑vector bundle from a configuration."""
@@ -353,7 +377,10 @@ class NnxTestGenerator:
         # Input tensor
         # ------------------------------------------------------------------
         if input is None:
-            if conf.synthetic_inputs:
+            # For streamin mode, input should be zero since we're not doing convolution
+            if conf.has_streamin:
+                input = torch.zeros(input_shape, dtype=torch.int64)
+            elif conf.synthetic_inputs:
                 input = torch.zeros(input_shape, dtype=torch.int64)
                 for i in range(conf.in_channel):
                     input[:, i,0,0] = i
@@ -367,7 +394,10 @@ class NnxTestGenerator:
         # Weight tensor
         # ------------------------------------------------------------------
         if weight is None:
-            if conf.synthetic_weights:
+            # For streamin mode, weights should be zero since we're not doing convolution
+            if conf.has_streamin:
+                weight = torch.zeros(weight_shape, dtype=torch.int64)
+            elif conf.synthetic_weights:
                 weight = torch.zeros(weight_shape, dtype=torch.int64)
                 for i in range(0, min(weight.shape[0], weight.shape[1])):
                     weight[i,i,0,0] = 1
@@ -497,6 +527,25 @@ class NnxTestGenerator:
                         output, conf.out_type
                     )
 
+        # ------------------------------------------------------------------
+        # Streamin (only if streamin is enabled)
+        # ------------------------------------------------------------------
+        if conf.has_streamin:
+            if streamin is None:
+                assert conf.streamin_type is not None
+                # Streamin shape matches output shape (after convolution, before normquant)
+                if conf.is_gemm:
+                    streamin_shape = (conf.out_channel, conf.in_height*conf.in_width)
+                else:
+                    out_height = (conf.in_height + conf.padding.top + conf.padding.bottom - conf.kernel_shape.height) // conf.stride.height + 1
+                    out_width = (conf.in_width + conf.padding.left + conf.padding.right - conf.kernel_shape.width) // conf.stride.width + 1
+                    streamin_shape = (1, conf.out_channel, out_height, out_width)
+                
+                # Generate random streamin data
+                streamin = NnxTestGenerator._random_data(
+                    conf.streamin_type, shape=streamin_shape
+                )
+
         # Generate final output with all parameters
         if conf.is_gemm:
             conv_kwargs = {
@@ -534,6 +583,7 @@ class NnxTestGenerator:
             ppoly_model=ppoly_model,
             synthetic_inputs=conf.synthetic_inputs,
             synthetic_weights=conf.synthetic_weights,
+            streamin=streamin,
         )
 
     # -----------------------------------------------------------------------
@@ -541,7 +591,7 @@ class NnxTestGenerator:
     # -----------------------------------------------------------------------
     @staticmethod
     def regenerate(test: NnxTest, regen_tensors: Set[str]) -> NnxTest:
-        test_tensors = set(["input", "output", "weight", "scale", "bias", "scale2", "bias2"])
+        test_tensors = set(["input", "output", "weight", "scale", "bias", "scale2", "bias2", "streamin"])
         load_tensors = test_tensors - regen_tensors
         kwargs = {tensor: getattr(test, tensor) for tensor in load_tensors if hasattr(test, tensor)}
         return NnxTestGenerator.from_conf(test.conf, **kwargs)
@@ -705,6 +755,23 @@ class NnxTestHeaderGenerator:
             )
 
         # ------------------------------------------------------------------
+        # Render streamin data
+        # ------------------------------------------------------------------
+        if test.streamin is not None:
+            assert test.conf.streamin_type is not None
+            streamin_ctype = test.conf.streamin_type.ctype()
+            if test.conf.is_gemm:
+                streamin_data = test.streamin.permute(1,0).ravel()
+            else:
+                streamin_data = test.streamin.permute(0, 2, 3, 1).ravel()
+            self.header_writer.generate_vector_files(
+                "streamin",
+                _type=streamin_ctype,
+                size=streamin_data.numel(),
+                init=streamin_data
+            )
+
+        # ------------------------------------------------------------------
         # Layer configuration header
         # ------------------------------------------------------------------
         self.header_writer.generate_defines_header(
@@ -766,8 +833,14 @@ class NnxTestHeaderGenerator:
                 "has_norm_quant": test.conf.has_norm_quant,
                 "has_bias": test.conf.has_bias,
                 "has_relu": test.conf.has_relu,
+                "has_streamin": test.conf.has_streamin,
                 "is_gemm": test.conf.is_gemm,
                 "polyapprox_degree": test.conf.polyapprox_degree,
+                "streamin": {
+                    "bits": test.conf.streamin_type._bits
+                    if test.conf.streamin_type is not None
+                    else 0
+                },
                 "ppolyapprox": {
                     "nr_parts": test.conf.polyapprox_segments,
                     "max_nr_parts": test.conf.polyapprox_max_nr_parts,
