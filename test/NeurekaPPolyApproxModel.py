@@ -228,52 +228,62 @@ class PiecewisePolyApproxModel:
         
         # Calculate total coefficient bits per segment
         coeff_bits_per_segment = c2_bits + c1_bits + c0_bits
-        
-        total_coeff_bits = self.num_segments * coeff_bits_per_segment
+
+        # Always pack max_nr_parts segments (HW always loads max)
+        total_coeff_bits = max_nr_parts * coeff_bits_per_segment
         boundary_total_bits = (max_nr_parts + 1) * boundary_bits
         total_bits = boundary_total_bits + total_coeff_bits
-        
+
+        # Pad boundaries to max_nr_parts + 1 entries
+        # Extra boundaries set to max signed value so binsearch maps overflow to last segment
+        boundaries_padded = np.full(max_nr_parts + 1, 2**(boundary_bits - 1) - 1, dtype=np.int32)
+        boundaries_padded[:len(boundaries_q)] = boundaries_q
+
+        # Pad coefficients to max_nr_parts by duplicating the last segment
+        coefficients_padded = np.zeros((max_nr_parts, 3), dtype=np.int32)
+        coefficients_padded[:self.num_segments] = coefficients_q
+        for i in range(self.num_segments, max_nr_parts):
+            coefficients_padded[i] = coefficients_q[-1]
+
         # Calculate number of uint32s needed
         num_uint32 = (total_bits + 31) // 32
         packed = np.zeros(num_uint32, dtype=np.uint32)
-        
+
         # Generic bit packing function
         def pack_bits(value, num_bits, bit_pos, packed_array):
             bits_to_write = num_bits
             val_to_pack = int(value) & ((1 << num_bits) - 1)
-            
+
             while bits_to_write > 0:
                 uint32_idx = bit_pos // 32
                 bit_offset = bit_pos % 32
                 bits_this_round = min(bits_to_write, 32 - bit_offset)
-                
+
                 mask = (1 << bits_this_round) - 1
                 packed_array[uint32_idx] |= ((val_to_pack & mask) << bit_offset)
-                
+
                 val_to_pack >>= bits_this_round
                 bits_to_write -= bits_this_round
                 bit_pos += bits_this_round
-            
+
             return bit_pos
-        
-        # Pack boundaries
+
+        # Pack boundaries (always max_nr_parts + 1)
         bit_pos = 0
-        for bound in boundaries_q:
-            if bit_pos < boundary_total_bits:
-                bit_pos = pack_bits(bound, boundary_bits, bit_pos, packed)
-        
+        for bound in boundaries_padded:
+            bit_pos = pack_bits(bound, boundary_bits, bit_pos, packed)
+
         # Skip to coefficient section
         bit_pos = boundary_total_bits
-        
-        # Pack coefficients for each segment
-        for i in range(self.num_segments):
-            coeffs = coefficients_q[i]
+
+        # Pack coefficients for each segment (always max_nr_parts)
+        for i in range(max_nr_parts):
+            coeffs = coefficients_padded[i]
             # Hardware accelerator always expects coefficients packed as {c2, c1, c0}
-            # coeffs array is stored as [c2, c1, c0] format
             bit_pos = pack_bits(coeffs[0], c2_bits, bit_pos, packed)  # c2
             bit_pos = pack_bits(coeffs[1], c1_bits, bit_pos, packed)  # c1
             bit_pos = pack_bits(coeffs[2], c0_bits, bit_pos, packed)  # c0
-        
+
         return packed
     
     def get_params(self) -> Tuple[np.ndarray, np.ndarray]:
